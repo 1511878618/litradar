@@ -1,0 +1,11 @@
+name: bioRxiv (genomics)
+adapter: biorxiv
+server: biorxiv
+surface: Preprints
+# 只收与方向相关的分类；去掉 categories 就是全量（约 80 条/天）
+categories:
+  - genomics
+  - genetics
+  - evolutionary biology
+  - plant biology
+max_items: 300

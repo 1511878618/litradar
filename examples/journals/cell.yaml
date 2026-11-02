@@ -1,0 +1,6 @@
+name: Cell
+adapter: custom
+module: journals/cell_custom.py
+surface: Articles in Press
+url: https://www.cell.com/cell/newarticles
+issn: "0092-8674"

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: engine (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+      - name: Tests (no network required)
+        run: python tests/run_tests.py
+      - name: Lint
+        run: |
+          python -m pip install ruff
+          ruff check src tests
+      - name: Entry point
+        run: litradar --version --json
+
+  plugin:
+    name: obsidian plugin
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: obsidian-litradar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Install
+        run: pnpm install
+      - name: Build (tsc --noEmit + esbuild)
+        run: pnpm run build
+      - name: Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obsidian-litradar
+          path: |
+            obsidian-litradar/main.js
+            obsidian-litradar/manifest.json
+            obsidian-litradar/styles.css
+          if-no-files-found: error

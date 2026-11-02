@@ -1,0 +1,15 @@
+name: The Plant Cell
+adapter: html
+url: https://academic.oup.com/plcell/advance-articles
+base_url: https://academic.oup.com
+surface: Advance Articles
+selectors:
+  item: "li.al-article-item"
+  title: "h4 a"
+  link: "h4 a::attr(href)"
+  doi: "span.al-doi"
+  date: "span.al-date"
+  abstract: "div.al-abstract"
+content_type: research-article
+fallback: [crossref]
+issn: "1040-4651"

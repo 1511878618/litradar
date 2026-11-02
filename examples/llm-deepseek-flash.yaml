@@ -1,0 +1,44 @@
+# DeepSeek「flash」模型配置片段
+#
+# 用法：把下面 llm / screening 两段**替换**进 <vault>/.litradar/config.yaml 里
+# 已有的同名段（不要直接追加，YAML 不允许重复键）。
+#
+# 1) 确认模型 id（不同账号/时期可能叫 deepseek-flash 或 deepseek-v3.x-flash）：
+#      curl -s https://api.deepseek.com/models \
+#        -H "Authorization: Bearer $LITRADAR_API_KEY" | python3 -m json.tool
+#    把返回里的 id 填到 model。
+#
+# 2) 设置 key（三选一，优先级从上到下）：
+#      a. 直接写进 llm.api_key（最方便；vault 会同步的话注意别把 key 带走）
+#      b. 写进 llm.api_key_file 指向的文件（推荐，放在 vault 外，chmod 600）
+#      c. export LITRADAR_API_KEY=...（计划任务需自行注入）
+#
+# 3) 先拿一天的数据试一次，确认 screen.json 与置顶正常：
+#      litradar render --vault <vault> --date 2026-11-01 --llm --refresh --json
+#
+# 4) 之后日常跑（计划任务里也是这条）：
+#      litradar run --vault <vault> --window yesterday --llm
+
+llm:
+  base_url: "https://api.deepseek.com/v1"
+  model: "deepseek-flash"
+  api_key: ""                       # 例如 "sk-..."，或 "${LITRADAR_API_KEY}"
+  api_key_file: ""                  # 例如 "~/.config/litradar/deepseek.key"
+  api_key_env: "LITRADAR_API_KEY"   # 前两项都为空时的兜底
+  timeout_s: 120
+  max_retries: 2
+  max_abstract_chars: 1200          # 每篇送进模型的摘要上限
+  json_mode: true                   # 模型不接受 response_format 时改成 false
+
+screening:
+  mode: llm
+  min_relevance: 0.6                # 低于它不进置顶（仍进正文全量列表）
+  max_items: 120                    # 一次最多送多少篇；预印本多时按日期截断
+  include_types: [research-article, review]
+  keywords:                         # 模型不可用时的兜底（英文，匹配英文摘要）
+    - positive selection
+    - genome-wide association
+    - large language model
+    - deep learning
+    - digital health
+    - electronic health record

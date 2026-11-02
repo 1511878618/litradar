@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litradar"
+version = "2.0.0"
+description = "Litradar: an auditable daily radar for new journal articles and preprints"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "litradar contributors" }]
+keywords = ["obsidian", "literature", "rss", "crossref", "preprint", "research", "zotero"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Environment :: Console",
+  "Topic :: Text Processing :: Markup :: Markdown",
+]
+dependencies = [
+  "PyYAML>=6.0",
+  "beautifulsoup4>=4.12",
+  "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+embed = ["sentence-transformers>=2.7"]
+dev = ["ruff>=0.4", "pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/1511878618/litradar"
+Issues = "https://github.com/1511878618/litradar/issues"
+
+[project.scripts]
+litradar = "litradar.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+litradar = ["templates/*.md"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]

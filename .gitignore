@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Obsidian plugin
+node_modules/
+.pnpm-store/
+obsidian-litradar/main.js
+obsidian-litradar/*.js.map
+
+# Local runs and scratch vaults
+/tmp-vault/
+/test-vault/
+.litradar-local/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

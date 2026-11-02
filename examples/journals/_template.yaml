@@ -1,0 +1,48 @@
+# 期刊配置模板 —— 复制成 journals/<slug>.yaml 后按需删注释
+#
+# 必填：name / adapter，以及对应适配器的数据源字段。
+# 其余字段都是可选的，但建议至少写 surface。
+
+name: Journal Name
+adapter: rss                  # rss | html | crossref | biorxiv | manual | custom
+
+# ---- 数据源（按 adapter 选一个） ----
+feed: https://example.org/feed.xml      # rss
+# url: https://example.org/advance      # html / custom / manual
+# issn: "0000-0000"                     # crossref
+# server: biorxiv                       # biorxiv: biorxiv | medrxiv
+# module: journals/custom.py            # custom
+
+surface: Latest Research      # 官网栏目名，进报告与覆盖表
+
+# ---- 排序与展示 ----
+impact_factor: 10.0           # 仅用于排序/展示，可改成自己的口径
+heading_level: 4              # 3-6；不写则按 IF 推导
+# preprint: false             # true = 预印本，永远排最后
+
+# ---- 内容过滤 ----
+# exclude_doi_prefixes: ["10.1038/d"]   # 命中前缀 → 归为“非研究类型”并进审计段
+# content_type: research-article        # 强制类型（默认按 feed/标题判断）
+# categories: [genomics, genetics]      # biorxiv：只收这些分类
+# max_items: 300                        # biorxiv：单刊上限
+
+# ---- 抓取细节 ----
+# date_filter: online         # crossref：online（默认）| created（Elsevier 年月精度时用）
+# fallback: [crossref]        # 主适配器失败时按顺序降级
+# rows: 200                   # crossref 单次条数
+# mailto: you@example.com     # crossref polite pool
+
+# ---- 配图（images.enabled 为 true 时生效） ----
+# image_page: ".full"         # 在文章 URL 后追加的正文页（预印本）
+# image_selector: "figure img"
+# cover_url: "https://example.org/journal-cover.png"
+
+# ---- html 适配器 ----
+# base_url: https://example.org
+# selectors:
+#   item: "li.article"
+#   title: "h4 a"
+#   link: "h4 a::attr(href)"
+#   date: "span.date"
+#   doi: "span.doi"
+#   abstract: "div.abstract"

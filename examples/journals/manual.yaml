@@ -1,0 +1,11 @@
+name: 手抄文献（示例）
+adapter: manual
+surface: Manual
+items:
+  - title: A manually pasted article title
+    url: https://example.org/article/1
+    doi: 10.1234/example.1
+    date: 2026-10-30
+    abstract: >
+      Manual entries are the honest fallback when a surface cannot be fetched:
+      a human pastes what they can see, the engine still windows, dedupes and renders it.
