@@ -27,7 +27,7 @@ def test_shell_wrapper_contains_the_run_command():
         assert path.name == "run-daily.sh"
         assert "-m litradar run" in content
         assert "--catch-up" in content
-        assert str(tmp) in content
+        assert str(tmp.resolve()) in content
         assert "/usr/bin/python3" in content
         assert content.startswith("#!/bin/sh")
 
@@ -60,8 +60,14 @@ def test_mac_plist_contains_time():
 
 def test_cron_line():
     with temp_dir() as tmp:
-        config = _config(tmp)
-        line = schedule.cron_line(schedule.wrapper_path(tmp), config)
+        original = schedule.platform_key
+        schedule.platform_key = lambda: "linux"
+        try:
+            config = _config(tmp)
+            wrapper = schedule.wrapper_path(tmp)
+            line = schedule.cron_line(wrapper, config)
+        finally:
+            schedule.platform_key = original
         assert line.startswith("30 7 * * *")
         assert "run-daily.sh" in line
 

@@ -122,7 +122,7 @@ def test_skeleton_writes_readmes():
 
 def test_vault_path_is_quoted_safely():
     with temp_dir() as tmp:
-        weird = tmp / "with space and \\ backslash"
+        weird = tmp / "with space and 'quote'"
         weird.mkdir()
         write_skeleton(weird)
         config = load_config(weird)

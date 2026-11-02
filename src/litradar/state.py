@@ -112,7 +112,9 @@ class VaultLock(AbstractContextManager):
                     flags = fcntl.LOCK_EX | (0 if self.wait_seconds else fcntl.LOCK_NB)
                     fcntl.flock(handle.fileno(), flags)
                 elif msvcrt is not None:  # pragma: no cover - Windows only
-                    handle.seek(0)
+                    # Lock a byte far from the PID we write at offset 0, so other
+                    # handles can still read the PID on Windows.
+                    handle.seek(1024)
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                 break
             except OSError as exc:
@@ -143,7 +145,7 @@ class VaultLock(AbstractContextManager):
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             elif msvcrt is not None:  # pragma: no cover - Windows only
-                handle.seek(0)
+                handle.seek(1024)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         except OSError:
             pass

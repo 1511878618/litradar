@@ -268,7 +268,7 @@ def test_render_attaches_images_to_highlights():
         assert summary.images == 1
         text = summary.report_path.read_text(encoding="utf-8")
         assert "](assets/" in text
-        asset = next((summary.report_path.parent / "assets").glob("*"))
+        asset = next((summary.report_path.parent / "assets").glob("*.png"))
         assert asset.read_bytes() == b"PNGDATA"
 
 
