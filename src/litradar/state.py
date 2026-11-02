@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -33,6 +34,20 @@ except ImportError:  # pragma: no cover - POSIX
 
 class LockBusy(EngineError):
     """Another litradar process owns the vault lock (exit code 6)."""
+
+
+# msvcrt locks are per process, so two VaultLock instances in one process would
+# both succeed on Windows.  A process-local registry makes re-entry behave the same
+# everywhere (and turns accidental nested locks into a clear error).
+_HELD_LOCKS: set[str] = set()
+_HELD_GUARD = threading.Lock()
+
+
+def _lock_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path.absolute())
 
 
 def read_json(path: Path | str, default: Any = None) -> Any:
@@ -75,6 +90,19 @@ class VaultLock(AbstractContextManager):
         self._handle: Any = None
 
     def acquire(self) -> VaultLock:
+        key = _lock_key(self.path)
+        with _HELD_GUARD:
+            if key in _HELD_LOCKS:
+                raise LockBusy("已有任务在运行（同一进程已持有 .litradar/.lock）")
+            _HELD_LOCKS.add(key)
+        try:
+            return self._acquire_os(key)
+        except BaseException:
+            with _HELD_GUARD:
+                _HELD_LOCKS.discard(key)
+            raise
+
+    def _acquire_os(self, key: str) -> VaultLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = open(self.path, "a+b")
         deadline = time.monotonic() + max(self.wait_seconds, 0)
@@ -104,6 +132,9 @@ class VaultLock(AbstractContextManager):
         return self
 
     def release(self) -> None:
+        key = _lock_key(self.path)
+        with _HELD_GUARD:
+            _HELD_LOCKS.discard(key)
         handle = self._handle
         self._handle = None
         if handle is None:
