@@ -1,7 +1,7 @@
 {
   "id": "litradar",
   "name": "Litradar",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "minAppVersion": "1.5.0",
   "description": "期刊文献雷达：查看每日新上线的期刊文章，一键重抓、重排、入库。",
   "author": "1511878618",

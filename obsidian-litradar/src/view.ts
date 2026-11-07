@@ -7,13 +7,16 @@
  * to `.litradar`.
  */
 
-import { ItemView, WorkspaceLeaf } from "obsidian";
+import { articleKey, findReadingEntry, matchesArticle } from "./reading";
+import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import type LitradarPlugin from "./main";
+import { ProfileBuilderModal } from "./profileModal";
 import { dateSourceNote } from "./store";
 import {
   SCHEMA_VERSION,
   type ActionKind,
   type Article,
+  type JournalScan,
   type LiveScan,
   type PanelData,
   type ScanStatus,
@@ -23,9 +26,27 @@ import {
 
 export const VIEW_TYPE_LITRADAR = "litradar-view";
 
+interface ModelPreset {
+  label: string;
+  model: string;
+  baseUrl: string;
+}
+
+const MODEL_PRESETS: ModelPreset[] = [
+  { label: "DeepSeek Flash（快速）", model: "deepseek-flash", baseUrl: "https://api.deepseek.com" },
+  { label: "DeepSeek V4 Pro（推理）", model: "deepseek-v4-pro", baseUrl: "https://api.deepseek.com" },
+  { label: "OpenAI GPT-5.1", model: "gpt-5.1", baseUrl: "https://api.openai.com/v1" },
+  { label: "OpenAI GPT-4.1", model: "gpt-4.1", baseUrl: "https://api.openai.com/v1" },
+  { label: "OpenAI GPT-4.1 mini", model: "gpt-4.1-mini", baseUrl: "https://api.openai.com/v1" },
+  { label: "OpenAI GPT-4o", model: "gpt-4o", baseUrl: "https://api.openai.com/v1" },
+  { label: "OpenAI GPT-4o mini", model: "gpt-4o-mini", baseUrl: "https://api.openai.com/v1" },
+  { label: "自定义…", model: "", baseUrl: "" },
+];
+
 const SCAN_LABELS: Record<string, string> = {
   ok: "✅ 已读",
   "metadata-only": "⚠ 仅元数据",
+  "off-cycle": "🛌 非出版日",
   blocked: "⛔ 被拦截",
   timeout: "⏱ 超时",
   error: "❌ 解析失败",
@@ -35,7 +56,7 @@ const SCAN_LABELS: Record<string, string> = {
 const FAILED_STATUSES: ScanStatus[] = ["blocked", "timeout", "error"];
 
 function isHealthy(status: string | undefined): boolean {
-  return status === "ok" || status === "metadata-only";
+  return status === "ok" || status === "metadata-only" || status === "off-cycle";
 }
 
 function isFailed(status: string | undefined): boolean {
@@ -71,6 +92,37 @@ function formatDateTime(iso: string | null | undefined): string {
   );
 }
 
+function formatMonthDayTime(iso: string | null | undefined): string {
+  const parsed = parseDate(iso);
+  if (!parsed) return "—";
+  return `${pad2(parsed.getMonth() + 1)}-${pad2(parsed.getDate())} ${formatTime(iso)}`;
+}
+
+const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+/** "每日" / "每周四" — the cadence comes from journals/<slug>.yaml. */
+function cadenceLabel(
+  scan: Partial<Pick<JournalScan, "cadence" | "weekday">> | undefined,
+): string {
+  if (!scan) return "—";
+  if (scan.cadence === "weekly" && typeof scan.weekday === "number") {
+    return `每周${WEEKDAY_LABELS[scan.weekday] ?? ""}`;
+  }
+  return "每日";
+}
+
+/** "Vol 189 · No 22" or a cover date; em dash when the source omits it. */
+function issueLabel(scan: Partial<JournalScan> | undefined): string {
+  if (!scan) return "—";
+  const parts: string[] = [];
+  if (scan.volume) parts.push(`Vol ${scan.volume}`);
+  if (scan.issue) parts.push(`No ${scan.issue}`);
+  if (parts.length > 0) return parts.join(" · ");
+  if (scan.cover_date) return String(scan.cover_date);
+  if (scan.surface && /online|latest|advance|first/i.test(scan.surface)) return "在线优先";
+  return "—";
+}
+
 function articleDate(item: Article): string {
   if (!item.online_date) return "官网未标注";
   return `${item.online_date}${dateSourceNote(item.date_source)}`;
@@ -94,6 +146,24 @@ function asArticles(value: unknown): Article[] {
 
 function newArticles(store: StorePayload | null): Article[] {
   return asArticles(store?.items).filter((item) => !item.already_seen);
+}
+
+function isPreprint(item: Article): boolean {
+  if (item.extra && (item.extra.preprint || item.extra.server)) return true;
+  return /^(bioRxiv|medRxiv|arXiv|SSRN|Research Square)$/i.test(item.journal || "");
+}
+
+function articleTypeLabel(item: Article): string {
+  if (item.article_type && item.article_type.trim()) return item.article_type.trim();
+  if (isPreprint(item)) return "Preprint";
+  if (item.content_type === "review") return "Review";
+  if (item.content_type === "research-article") return "Research Article";
+  return "Other";
+}
+
+function articleSubject(item: Article): string {
+  const value = item.extra?.category ?? item.extra?.subject;
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function screenResults(data: PanelData): ScreenResult[] {
@@ -139,6 +209,22 @@ export class LitradarView extends ItemView {
   private unsubscribe: (() => void) | null = null;
   private wasRunning = false;
   private closed = false;
+  private selectedRunId: string | null = null;
+  private archiveDays = 7;
+  private archiveItems: Article[] = [];
+  private archiveQuery = "";
+  private archiveStatus = "";
+  private archiveJournal = "";
+  private archiveKind = "";
+  private archiveTopic = "";
+  private archiveLimit = 50;
+  private archiveLoading = false;
+  private query = "";
+  private journal = "";
+  private articleKind = "";
+  private relevantOnly = false;
+  private libraryTab = "todo";
+  private searchTimer: number | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -171,6 +257,7 @@ export class LitradarView extends ItemView {
 
   async onClose(): Promise<void> {
     this.closed = true;
+    if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
     this.stopPolling();
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -225,10 +312,15 @@ export class LitradarView extends ItemView {
     }
     this.loading = true;
     try {
-      const data = await this.plugin.reader.loadPanelData(this.plugin.today());
+      const data = await this.plugin.reader.loadPanelData(this.plugin.today(), this.selectedRunId);
       if (this.closed) return;
+      const beforeZotero = JSON.stringify([this.plugin.zoteroLibrary, this.plugin.zoteroStatuses, this.plugin.zoteroLegacyCount, this.plugin.zoteroError]);
+      await this.plugin.refreshZoteroReading();
+      if (this.closed) return;
+      const changed = JSON.stringify(data) !== JSON.stringify(this.snapshot) ||
+        beforeZotero !== JSON.stringify([this.plugin.zoteroLibrary, this.plugin.zoteroStatuses, this.plugin.zoteroLegacyCount, this.plugin.zoteroError]);
       this.snapshot = data;
-      this.render();
+      if (changed) this.render();
     } catch (error) {
       if (this.closed) return;
       this.snapshot = {
@@ -245,6 +337,24 @@ export class LitradarView extends ItemView {
         runLogTail: null,
         today: this.plugin.today(),
         fetchedToday: false,
+        schedule: {
+          kind: "daily",
+          time: "09:00",
+          tz: "Asia/Shanghai",
+          installed: false,
+          nextRunAt: null,
+          lastScanAt: null,
+          todayFetched: false,
+        },
+        profile: {
+          direction: "",
+          keywords: [],
+          sources: [],
+          model: "",
+          updatedAt: null,
+          fromZotero: false,
+        },
+        llm: { model: "deepseek-chat", baseUrl: "https://api.deepseek.com" },
         warnings: [],
         error: error instanceof Error ? error.message : String(error),
       };
@@ -263,13 +373,76 @@ export class LitradarView extends ItemView {
   render(): void {
     if (this.closed) return;
     const container = this.contentEl;
+    const scrollTop = container.scrollTop;
+    const scrollLeft = container.scrollLeft;
+    const expanded = new Map<string, boolean>();
+    const detailKey = (el: HTMLDetailsElement): string =>
+      el.dataset.stateKey ?? `${el.className}:${el.querySelector(":scope > summary")?.textContent?.replace(/（\d+ 篇）/g, "")}`;
+    container.querySelectorAll<HTMLDetailsElement>("details").forEach(el => {
+      expanded.set(detailKey(el), el.open);
+    });
+    // Keep drafts and keyboard focus when job events rebuild the panel.
+    const selector = "input, textarea, select";
+    const controls = Array.from(container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector));
+    const controlKeys = (elements: typeof controls): string[] => {
+      const counts = new Map<string, number>();
+      return elements.map(el => {
+        const base = `${el.tagName}:${el.className}:${el.dataset.articleKey ?? ""}`;
+        const count = counts.get(base) ?? 0;
+        counts.set(base, count + 1);
+        return `${base}:${count}`;
+      });
+    };
+    const keys = controlKeys(controls);
+    const activeIndex = controls.indexOf(document.activeElement as HTMLInputElement);
+    const drafts = new Map(controls.map((el, index) => [keys[index], ({
+      value: el.value,
+      dirty: !(el instanceof HTMLSelectElement) && el.value !== el.defaultValue,
+      checked: el instanceof HTMLInputElement ? el.checked : false,
+    })]));
+    const active = controls[activeIndex];
+    const selection = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+      ? [active.selectionStart, active.selectionEnd] : null;
+    this.renderContent();
+    container.querySelectorAll<HTMLDetailsElement>("details").forEach(el => {
+      const open = expanded.get(detailKey(el));
+      if (open !== undefined) el.open = open;
+    });
+    const nextControls = Array.from(container.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector));
+    const nextKeys = controlKeys(nextControls);
+    nextControls.forEach((el, index) => {
+      const draft = drafts.get(nextKeys[index]);
+      if (!draft) return;
+      if (draft.dirty && !el.classList.contains("litradar-article-search")) el.value = draft.value;
+      if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) {
+        el.checked = draft.checked;
+      }
+      if (nextKeys[index] === keys[activeIndex]) {
+        el.focus({ preventScroll: true });
+        if (selection && selection[0] !== null && selection[1] !== null &&
+            (el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && /^(text|search|url|tel|password)$/.test(el.type)))) {
+          el.setSelectionRange(selection[0], selection[1]);
+        }
+      }
+    });
+    container.scrollTop = scrollTop;
+    container.scrollLeft = scrollLeft;
+  }
+
+  private renderContent(): void {
+    const container = this.contentEl;
     container.empty();
     container.addClass("litradar-view");
 
     const data = this.snapshot;
     this.renderHeader(container, data);
     this.renderBanners(container, data);
-    this.renderToolbar(container, data);
+    if (!this.selectedRunId) {
+      this.renderSchedule(container, data);
+      this.renderToolbar(container, data);
+    }
+    if (data) this.renderHistory(container, data);
+    this.renderLibrary(container);
 
     if (!data) {
       container.createDiv({ cls: "litradar-loading", text: "正在读取 .litradar…" });
@@ -295,14 +468,242 @@ export class LitradarView extends ItemView {
       return;
     }
 
-    this.renderCoverage(container, data);
+    this.renderArchive(container);
+    this.renderFilters(container, data);
     this.renderHighlights(container, data);
     this.renderAllItems(container, data);
+    this.renderCoverage(container, data);
+    this.renderResearch(container, data);
     this.renderFailures(container, data);
     this.renderValidation(container, data);
     this.renderDoctor(container);
     this.renderLog(container, data);
     this.renderFooter(container, data);
+  }
+
+  private async loadArchive(): Promise<void> {
+    this.archiveLoading = true;
+    this.render();
+    try { this.archiveItems = await this.plugin.reader.readArchive(this.archiveDays); }
+    catch (error) { new Notice(`文献库读取失败：${error}`); }
+    finally { this.archiveLoading = false; this.archiveLimit = 50; this.render(); }
+  }
+
+  private renderArchive(container: HTMLElement): void {
+    const section = container.createEl("details", {cls: "litradar-panel"});
+    section.dataset.stateKey = "cross-batch-library";
+    section.createEl("summary", {text: `跨批次文献库 · ${this.archiveItems.length} 篇`});
+    const controls = section.createDiv({cls: "litradar-reading-controls"});
+    const range = controls.createEl("select", {attr: {"aria-label": "文献库日期范围"}});
+    for (const [value, label] of [[7,"最近一周"],[30,"最近一个月"],[0,"全部历史"]] as const) range.createEl("option", {value: String(value), text: label});
+    range.value = String(this.archiveDays);
+    range.onchange = () => {this.archiveDays = Number(range.value); void this.loadArchive();};
+    const load = controls.createEl("button", {text: this.archiveLoading ? "读取中…" : "加载／刷新文献库"});
+    load.disabled = this.archiveLoading;
+    load.onclick = () => void this.loadArchive();
+    const search = controls.createEl("input", {type:"search", value:this.archiveQuery, placeholder:"搜索中文、英文、摘要或 DOI", attr:{"aria-label":"搜索全部历史文献"}});
+    search.oninput = () => {this.archiveQuery=search.value; if (this.searchTimer) window.clearTimeout(this.searchTimer); this.searchTimer=window.setTimeout(()=>this.render(),200);};
+    const dropdown = (label: string, options: [string,string][], value: string, change: (v:string)=>void) => {
+      const el=controls.createEl("select", {attr:{"aria-label":label}});
+      for (const [v,t] of options) el.createEl("option",{value:v,text:t});
+      el.value=value; el.onchange=()=>{change(el.value);this.render();};
+    };
+    dropdown("文献库期刊", [["","全部期刊"], ...Array.from(new Set(this.archiveItems.map(a=>a.journal))).sort().map(j=>[j,j] as [string,string])],this.archiveJournal,v=>this.archiveJournal=v);
+    dropdown("文献库类型", [["","全部类型"],["journal","期刊"],["preprint","预印本"]],this.archiveKind,v=>this.archiveKind=v);
+    const topics=Array.from(new Set(this.archiveItems.flatMap(a=>Array.isArray(a.extra?.tags_auto) ? a.extra.tags_auto as string[] : []))).sort();
+    dropdown("文献库主题", [["","全部主题"],...topics.map(t=>[t,t] as [string,string])],this.archiveTopic,v=>this.archiveTopic=v);
+    dropdown("文献库阅读状态", [["","全部阅读状态"],["none","尚未设置"], ...this.plugin.zoteroStatuses.map(o=>[o.value,o.label] as [string,string])], this.archiveStatus,v=>this.archiveStatus=v);
+    const matches=this.archiveItems.filter(item=>matchesArticle(item,{query:this.archiveQuery,journal:this.archiveJournal,kind:this.archiveKind,relevantOnly:false},isPreprint(item),true) && (!this.archiveTopic || (item.extra?.tags_auto as string[] || []).includes(this.archiveTopic)) && (!this.archiveStatus || (findReadingEntry(this.plugin.zoteroLibrary,item)?.status || "none")===this.archiveStatus));
+    section.createEl("p",{text:`匹配 ${matches.length} 篇 · 按日报日期筛选，DOI 去重；阅读状态来自 Zotero`});
+    for (const item of matches.slice(0,this.archiveLimit)) {
+      const card=section.createEl("details",{cls:"litradar-card"}); card.dataset.stateKey=`archive:${item.id}`;
+      card.createEl("summary",{text:item.title_zh || item.title});
+      card.createEl("p",{text:`${item.journal} · ${item.online_date || "日期待核验"} · 出现于 ${(item.extra?.report_dates as string[] || []).join("、")}`});
+      if(item.title_zh) card.createEl("p",{text:item.title});
+      if(item.summary_zh) card.createEl("p",{text:item.summary_zh});
+      if(item.abstract_raw) card.createEl("p",{text:item.abstract_raw});
+      this.renderReadingAction(card,item,String(item.extra?.report_date || ""));
+    }
+    if(matches.length>this.archiveLimit) {const more=section.createEl("button",{text:"再显示 50 篇"});more.onclick=()=>{this.archiveLimit+=50;this.render();};}
+  }
+
+  private hasFilters(): boolean {
+    return !!(this.query.trim() || this.journal || this.articleKind || this.relevantOnly);
+  }
+
+  private articleMatches(item: Article, data: PanelData): boolean {
+    return matchesArticle(item, {
+      query: this.query, journal: this.journal, kind: this.articleKind, relevantOnly: this.relevantOnly,
+    }, isPreprint(item), screenResults(data).some(row => row.id === item.id && row.relevant === true));
+  }
+
+  private renderHistory(container: HTMLElement, data: PanelData): void {
+    const row = container.createDiv({ cls: "litradar-reading-controls" });
+    const label = row.createEl("label", { text: "浏览批次 " });
+    const select = label.createEl("select", { cls: "litradar-history-select" });
+    select.createEl("option", { value: "", text: "最新批次（自动跟随）" });
+    for (const id of [...data.runIds].reverse()) select.createEl("option", { value: id, text: id });
+    select.value = this.selectedRunId ?? "";
+    select.onchange = () => {
+      this.selectedRunId = select.value || null;
+      this.journal = "";
+      void this.refresh();
+    };
+    if (data.activeRunId) {
+      const open = row.createEl("button", { text: "打开本批次日报" });
+      open.onclick = () => void this.plugin.openReport(data.activeRunId ?? undefined);
+    }
+    row.createEl("small", { text: "选择历史批次仅用于浏览；切回“最新批次”可进行抓取和重生成。" });
+  }
+
+  private renderReadingAction(container: HTMLElement, article: Article, collectionDate?: string): void {
+    const actions = container.createDiv({ cls: "litradar-zotero-actions" });
+    const label = actions.createEl("label", { cls: "litradar-reading-action", text: "Zotero 阅读状态 " });
+    const feedback = actions.createEl("select", {attr:{"aria-label":"推荐反馈"}});
+    for (const [value,text] of [["","推荐反馈…"],["relevant","相关"],["irrelevant","不相关"],["less","减少这类推荐"],["clear","撤销反馈"]]) feedback.createEl("option",{value,text});
+    feedback.onchange=async()=>{if(!feedback.value)return;feedback.disabled=true;try{await this.plugin.saveRecommendationFeedback(article,feedback.value);}catch(error){new Notice(String(error));}finally{feedback.disabled=false;feedback.value="";}};
+    const state = this.plugin.articleStates?.get(article.doi || article.id);
+    const known = findReadingEntry(this.plugin.zoteroLibrary, article);
+    actions.createEl("small", {text: state ? `${state.phase}${state.error ? " · "+state.error : ""}` : known ? "已在 Zotero · PDF 状态待检查" : "入库与 PDF 状态尚未检查"});
+    const inspect = actions.createEl("button", {text:"刷新入库／PDF 状态"});
+    inspect.onclick=()=>void this.plugin.inspectZoteroArticle(article);
+    if(article.title_zh) container.createEl("p",{cls:"litradar-card-meta",text:`原文：${article.title}`});
+    if(article.summary_zh) container.createEl("p",{text:article.summary_zh});
+    if(article.why_zh) container.createEl("p",{text:`推荐理由：${article.why_zh}`});
+    if(article.extra?.late_arrival) container.createEl("p",{text:"补收录：来源延迟登记，保留原发表日期"});
+    if(article.extra?.feedback_reason) container.createEl("p",{text:`推荐调整：${article.extra.feedback_reason}`});
+    if(article.extra?.superseded_by) container.createEl("p",{text:"已有正式版收录，预印本保留原阅读记录，不再重复置顶"});
+    const versions = article.extra?.versions;
+    if(Array.isArray(versions)) for(const version of versions) {
+      const doi=String(version.doi || "");
+      if(!/^10\.\d{4,9}\/[^\s<>]+$/.test(doi))continue;
+      const row=container.createEl("p");
+      row.createEl("a",{text:`关联版本：${doi}`,href:`https://doi.org/${encodeURI(doi)}`,attr:{target:"_blank",rel:"noopener noreferrer"}});
+      row.createSpan({text:` · ${version.evidence || "DOI 关系"}`});
+      const related = this.plugin.zoteroLibrary.find(entry=>(entry.article.doi || "").toLowerCase()===doi.toLowerCase());
+      if(related) row.createSpan({text:` · 原版本阅读状态：${related.status || "未设置"}（原记录保留）`});
+    }
+    const select = label.createEl("select");
+    select.dataset.articleKey = articleKey(article);
+    select.createEl("option", { value: "", text: "未设置" });
+    for (const option of this.plugin.zoteroStatuses) select.createEl("option", { value: option.value, text: option.label });
+    const status = findReadingEntry(this.plugin.zoteroLibrary, article)?.status ?? "";
+    if (status && !this.plugin.zoteroStatuses.some(option => option.value === status)) {
+      select.createEl("option", { value: status, text: `${status}（旧状态）` });
+    }
+    select.value = status;
+    select.disabled = !!this.plugin.zoteroError || !this.plugin.zoteroStatuses.length;
+    for (const [action, title] of [["save", "保存到 Zotero"], ["download", "下载 PDF"], ["open", "在 Zotero 打开"], ["pdf", "打开 PDF"]] as const) {
+      const button = actions.createEl("button", { cls: "litradar-zotero-action", text: title });
+      button.onclick = async () => {
+        button.disabled = true;
+        try { await this.plugin.zoteroArticleAction(article, action, collectionDate); }
+        catch (error) { new Notice(error instanceof Error ? error.message : String(error), 10000); }
+        finally { button.disabled = false; }
+      };
+    }
+    select.onchange = async () => {
+      select.disabled = true;
+      try {
+        await this.plugin.setReadingStatus(article, select.value, collectionDate);
+      } catch (error) {
+        new Notice(`阅读状态保存失败：${error instanceof Error ? error.message : String(error)}`);
+        this.render();
+      } finally { select.disabled = false; }
+    };
+  }
+
+  private renderLibrary(container: HTMLElement): void {
+    const entries = this.plugin.zoteroLibrary;
+    const details = container.createEl("details", { cls: "litradar-panel litradar-library" });
+    details.dataset.stateKey = "reading-library";
+    details.createEl("summary", { text: `Reading List · ${entries.length} 篇` });
+    details.createEl("p", { cls: "litradar-card-meta", text: "状态与 Zotero Reading List 共享，支持其自定义状态；可手动刷新同步。" });
+    const refresh = details.createEl("button", { text: "刷新 Zotero" });
+    refresh.onclick = async () => { refresh.disabled = true; await this.plugin.refreshZoteroReading(true); this.render(); };
+    if (this.plugin.zoteroError) {
+      details.open = true;
+      details.createEl("p", { cls: "litradar-error-text", text: this.plugin.zoteroError + "；当前清单可能不是最新状态。" });
+    }
+    const legacyCount = Object.keys(this.plugin.settings.readingLibrary).length;
+    if (legacyCount || this.plugin.zoteroLegacyCount) {
+      for (const [key, title] of [["readingListTodoStatus", "旧待读映射"], ["readingListReadStatus", "旧已读映射"]] as const) {
+        const label = details.createEl("label", { cls: "litradar-reading-action", text: title });
+        const mapping = label.createEl("select");
+        mapping.createEl("option", {value:"",text:"请选择 Reading List 状态"});
+        for (const option of this.plugin.zoteroStatuses) mapping.createEl("option", {value:option.value,text:option.label});
+        mapping.value = this.plugin.settings[key];
+        mapping.onchange = () => { void this.plugin.updateSettings({[key]:mapping.value}); };
+      }
+    }
+    if (this.plugin.zoteroLegacyCount) {
+      const migrate = details.createEl("button", {text:`迁移旧 Zotero 标签（${this.plugin.zoteroLegacyCount} 篇）`});
+      migrate.onclick = async () => {
+        migrate.disabled = true;
+        try {
+          const result = await this.plugin.migrateZoteroTags();
+          new Notice(`迁移 ${result.migrated} 篇，保留已有状态 ${result.preserved} 篇，失败 ${result.failed.length} 篇`, 10000);
+        } catch(error) { new Notice(error instanceof Error ? error.message : String(error), 10000); }
+        finally { this.render(); }
+      };
+    }
+    if (legacyCount) {
+      const migrate = details.createEl("button", { text: `迁移旧本地清单到 Zotero（${legacyCount} 篇）` });
+      migrate.onclick = async () => {
+        migrate.disabled = true;
+        try { await this.plugin.migrateReadingLibrary(); new Notice("旧清单已迁移到 Zotero"); }
+        catch (error) { new Notice(`迁移未完成，未迁移条目已保留：${error instanceof Error ? error.message : String(error)}`, 10000); }
+        finally { this.render(); }
+      };
+    }
+    const select = details.createEl("select", { cls: "litradar-library-tab", attr: { "aria-label": "阅读清单状态" } });
+    select.createEl("option", { value: "", text: "全部状态" });
+    for (const option of this.plugin.zoteroStatuses) select.createEl("option", {value:option.value,text:option.label});
+    if (this.libraryTab && !this.plugin.zoteroStatuses.some(option => option.value === this.libraryTab)) this.libraryTab = "";
+    select.value = this.libraryTab;
+    select.onchange = () => { this.libraryTab = select.value; this.render(); };
+    const rows = entries.filter(row => !this.libraryTab || row.status === this.libraryTab).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    if (!rows.length) details.createEl("p", { text: "清单为空。选择 Reading List 状态后即可入库，并与 Zotero 的状态列同步。" });
+    for (const row of rows) {
+      const card = details.createDiv({ cls: "litradar-card" });
+      const url = safeExternalUrl(row.article.url);
+      if (url) card.createEl("a", { text: row.article.title, href: url, attr: { target: "_blank", rel: "noopener noreferrer" } });
+      else card.createEl("strong", { text: row.article.title });
+      card.createDiv({ cls: "litradar-card-meta", text: `${row.article.journal || "未知期刊"} · ${row.status}` });
+      if (row.article.abstract_raw) {
+        const abstract = card.createEl("details");
+        abstract.dataset.stateKey = `library-abstract:${articleKey(row.article)}`;
+        abstract.createEl("summary", { text: "摘要" });
+        abstract.createEl("p", { text: row.article.abstract_raw });
+      }
+      this.renderReadingAction(card, row.article);
+    }
+  }
+
+  private renderFilters(container: HTMLElement, data: PanelData): void {
+    const row = container.createDiv({ cls: "litradar-reading-controls" });
+    const search = row.createEl("input", {
+      type: "search", cls: "litradar-article-search", value: this.query,
+      placeholder: "搜索标题、摘要、作者或 DOI…", attr: { "aria-label": "搜索本批次文献" },
+    });
+    search.oninput = () => {
+      this.query = search.value;
+      if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
+      this.searchTimer = window.setTimeout(() => { this.searchTimer = null; this.render(); }, 200);
+    };
+    const dropdown = (cls: string, label: string, options: string[][], value: string, change: (value: string) => void) => {
+      const select = row.createEl("select", { cls, attr: { "aria-label": label } });
+      for (const [value, text] of options) select.createEl("option", { value, text });
+      select.value = value;
+      select.onchange = () => { change(select.value); this.render(); };
+    };
+    dropdown("litradar-journal-filter", "期刊", [["", "全部期刊"], ...Array.from(new Set(newArticles(data.store).map(item => item.journal))).sort().map(name => [name, name])], this.journal, value => { this.journal = value; });
+    dropdown("litradar-kind-filter", "文献类型", [["", "全部类型"], ["journal", "期刊文章"], ["preprint", "预印本"]], this.articleKind, value => { this.articleKind = value; });
+    dropdown("litradar-relevance-filter", "相关性", [["", "全部相关性"], ["relevant", "仅模型判定相关"]], this.relevantOnly ? "relevant" : "", value => { this.relevantOnly = !!value; });
+    const clear = row.createEl("button", { text: "清除筛选" });
+    clear.onclick = () => { this.query = this.journal = this.articleKind = ""; this.relevantOnly = false; this.render(); };
+    const items = newArticles(data.store);
+    row.createEl("small", { text: `本批次新条目 ${items.filter(item => this.articleMatches(item, data)).length} / ${items.length} 篇 · 筛选不影响独立阅读清单` });
   }
 
   private renderHeader(container: HTMLElement, data: PanelData | null): void {
@@ -352,7 +753,7 @@ export class LitradarView extends ItemView {
     }
     if (!data.store) {
       status.addClass("is-muted");
-      status.setText("今日尚未抓取");
+      status.setText(`今日尚未抓取 · 计划 ${data.schedule.time}`);
       return;
     }
 
@@ -365,8 +766,9 @@ export class LitradarView extends ItemView {
     const coverage = data.report?.coverage ?? "—";
     const icon = allFailed ? "❌" : scans.some((scan) => isFailed(scan.status)) ? "⚠️" : "✅";
     status.addClass(allFailed ? "is-fail" : "is-ok");
+    const when = data.fetchedToday ? "今日已抓取" : "上次抓取";
     status.setText(
-      `${icon} 已更新 ${formatTime(data.store.scan_at)} · 覆盖 ${coverage} · ${items} 篇 / 置顶 ${highlights}`,
+      `${icon} ${when} ${formatTime(data.store.scan_at)} · 覆盖 ${coverage} · ${items} 篇 / 置顶 ${highlights}`,
     );
     if (!data.fetchedToday) {
       status.addClass("is-stale");
@@ -412,17 +814,6 @@ export class LitradarView extends ItemView {
       );
     }
 
-    if (data?.store && !data.fetchedToday) {
-      this.banner(
-        container,
-        "warn",
-        "今日尚未抓取",
-        `当前显示最近一次 ${data.store.window?.label ?? data.activeRunId ?? ""}` +
-          `（扫描于 ${formatDateTime(data.store.scan_at)}）。下一次轮询会重新检查。`,
-        [{ label: "重抓", onClick: () => void this.plugin.runAction("fetch") }],
-      );
-    }
-
     if (data?.store && typeof data.store.schema === "number" && data.store.schema > SCHEMA_VERSION) {
       this.banner(
         container,
@@ -430,6 +821,80 @@ export class LitradarView extends ItemView {
         "数据结构版本高于插件",
         `store schema=${data.store.schema}（插件支持 ${SCHEMA_VERSION}）。请升级插件，不要修改 store。`,
       );
+    }
+  }
+
+  private renderSchedule(container: HTMLElement, data: PanelData | null): void {
+    if (!data || data.error) return;
+    const schedule = data.schedule;
+    const section = container.createEl("section", { cls: "litradar-panel litradar-schedule" });
+    const head = section.createDiv({ cls: "litradar-schedule-head" });
+    const title = head.createDiv({ cls: "litradar-schedule-title" });
+    title.createEl("h5", { text: "抓取计划" });
+    title.createDiv({
+      cls: "litradar-schedule-sub",
+      text: `${schedule.kind === "weekly" ? "每周" : "每天"} ${schedule.time} · ${schedule.tz}`,
+    });
+
+    const badge = head.createDiv({
+      cls: `litradar-pill ${schedule.todayFetched ? "is-ok" : "is-warn"}`,
+      text: schedule.todayFetched
+        ? `今日已抓取 ${formatTime(schedule.lastScanAt)}`
+        : "今日尚未抓取",
+    });
+    badge.title = schedule.lastScanAt
+      ? `最近一次抓取：${formatDateTime(schedule.lastScanAt)}`
+      : "还没有任何抓取记录";
+
+    const grid = section.createDiv({ cls: "litradar-schedule-grid" });
+    const cell = (label: string, value: string, cls = ""): void => {
+      const item = grid.createDiv({ cls: `litradar-schedule-cell ${cls}`.trim() });
+      item.createDiv({ cls: "litradar-schedule-label", text: label });
+      item.createDiv({ cls: "litradar-schedule-value", text: value });
+    };
+    cell("下次计划", !schedule.installed && !this.plugin.settings.autoRunEnabled ? "未启用" : schedule.nextRunAt ? formatMonthDayTime(schedule.nextRunAt) : "—");
+    cell(
+      "系统后台定时",
+      schedule.installed ? "已安装" : "未安装",
+      schedule.installed ? "" : "is-warn",
+    );
+    cell("上次抓取", formatDateTime(schedule.lastScanAt));
+    cell("今日日报", data.report ? "已生成" : "未生成", data.report ? "" : "is-warn");
+    cell("Obsidian 自动抓取", this.plugin.settings.autoRunEnabled ? "已开启" : "已关闭");
+    section.createDiv({
+      cls: "litradar-schedule-hint",
+      text: this.plugin.settings.autoRunEnabled
+        ? "Obsidian 内自动抓取已开启，保持应用运行即可按计划检查。系统后台定时单独管理。"
+        : schedule.installed ? "Obsidian 内自动抓取已关闭；系统后台任务仍独立运行。" : "自动抓取已关闭。可在“自动抓取设置”中开启并修改每日时间。",
+    });
+
+    const actions = section.createDiv({ cls: "litradar-schedule-actions" });
+    const settings = actions.createEl("button", {cls:"litradar-btn",text:"自动抓取设置"});
+    settings.onclick = () => this.openSettings();
+    const busy = !!this.plugin.job;
+    const blocked = !!this.plugin.engineBlocker();
+    const addButton = (label: string, action: ActionKind, primary = false): void => {
+      const button = actions.createEl("button", {
+        cls: `litradar-btn${primary ? " litradar-btn-primary" : ""}`,
+        text: label,
+      });
+      button.disabled = busy || blocked;
+      button.onclick = () => void this.plugin.runAction(action, action === "repair" ? {runId:data?.activeRunId || undefined} : undefined);
+    };
+
+    if (!schedule.todayFetched) {
+      addButton("立即抓取并生成", "run", true);
+    } else if (!data.report) {
+      addButton("生成今日日报", "render", true);
+    } else {
+      addButton("重新抓取并生成", "run");
+    }
+    if (busy) {
+      const cancel = actions.createEl("button", {
+        cls: "litradar-btn litradar-btn-danger",
+        text: "取消",
+      });
+      cancel.onclick = () => this.plugin.cancelJob();
     }
   }
 
@@ -455,11 +920,14 @@ export class LitradarView extends ItemView {
       button.disabled = !enabled;
       if (!enabled && reasonText) button.title = reasonText;
       button.onclick = () => {
-        void this.plugin.runAction(action);
+        void this.plugin.runAction(action, action === "repair" ? {runId:data?.activeRunId || undefined} : undefined);
       };
     };
 
-    add("重抓", "fetch", !engineBlocked && !busy && initialized, reason("尚未初始化"));
+    add("抓取并生成", "run", !engineBlocked && !busy && initialized, reason("尚未初始化"));
+    add("只抓取", "fetch", !engineBlocked && !busy && initialized, reason("尚未初始化"));
+    add("重试失败期刊", "repair", !engineBlocked && !busy && hasStore, reason("尚无批次"));
+    add("补齐／回查迟到", "maintain", !engineBlocked && !busy && initialized, reason());
     add("重生成", "render", !engineBlocked && !busy && hasStore, reason("今日尚未抓取"));
     add("算相关度", "embed", !engineBlocked && !busy && hasStore, reason("今日尚未抓取"));
 
@@ -480,6 +948,107 @@ export class LitradarView extends ItemView {
     }
   }
 
+  private renderResearch(container: HTMLElement, data: PanelData | null): void {
+    if (!data) return;
+    const section = container.createEl("section", { cls: "litradar-panel litradar-research" });
+    const head = section.createDiv({ cls: "litradar-research-head" });
+    const title = head.createDiv();
+    title.createEl("h5", { text: "科研关键词" });
+    title.createDiv({
+      cls: "litradar-research-sub",
+      text: data.profile.fromZotero
+        ? `来自 Zotero${data.profile.sources.length ? " · " + data.profile.sources.join("、") : ""}` +
+          (data.profile.updatedAt ? ` · ${data.profile.updatedAt.slice(0, 10)}` : "")
+        : "当前来自 config.yaml；尚未从 Zotero 生成",
+    });
+    const build = head.createEl("button", { cls: "litradar-btn", text: "从 Zotero 生成" });
+    build.onclick = () => {
+      new ProfileBuilderModal(this.app, this.plugin, () => void this.refresh()).open();
+    };
+
+    section.createDiv({
+      cls: "litradar-profile-direction",
+      text: data.profile.direction || "尚未设置研究方向（direction）",
+    });
+
+    const keywords = data.profile.keywords;
+    const chipBox = section.createDiv({ cls: "litradar-keywords" });
+    if (keywords.length === 0) {
+      chipBox.createSpan({ cls: "litradar-empty-line", text: "还没有关键词，点击右上角从 Zotero 生成。" });
+    } else {
+      for (const keyword of keywords.slice(0, 20)) {
+        chipBox.createSpan({ cls: "litradar-keyword", text: keyword });
+      }
+      if (keywords.length > 20) {
+        chipBox.createSpan({ cls: "litradar-empty-line", text: `+${keywords.length - 20}` });
+      }
+    }
+
+    const divider = section.createDiv({ cls: "litradar-research-divider" });
+    divider.createEl("h5", { text: "生成模型" });
+    const note = section.createDiv({
+      cls: "litradar-research-sub",
+      text: "只改模型和 base URL；API key 用 llm.api_key_file 指向 vault 外文件（推荐），或写进 config.local.yaml。",
+    });
+    note.addClass("litradar-model-note");
+
+    const row = section.createDiv({ cls: "litradar-model-row" });
+    const select = row.createEl("select", { cls: "litradar-model-select" });
+    const current = data.llm;
+    let selected = MODEL_PRESETS.findIndex(
+      (preset) => preset.model === current.model && preset.baseUrl === current.baseUrl,
+    );
+    if (selected < 0) selected = MODEL_PRESETS.length - 1;
+    MODEL_PRESETS.forEach((preset, index) => {
+      const option = select.createEl("option", { text: preset.label, value: String(index) });
+      if (index === selected) option.selected = true;
+    });
+
+    const modelInput = row.createEl("input", {
+      type: "text",
+      cls: "litradar-model-input",
+      value: current.model,
+      placeholder: "模型 ID",
+    });
+    const baseInput = row.createEl("input", {
+      type: "text",
+      cls: "litradar-model-base",
+      value: current.baseUrl,
+      placeholder: "https://api.example.com/v1",
+    });
+    select.addEventListener("change", () => {
+      const preset = MODEL_PRESETS[Number(select.value)];
+      if (preset && preset.model) {
+        modelInput.value = preset.model;
+        baseInput.value = preset.baseUrl;
+      }
+    });
+
+    const saveRow = section.createDiv({ cls: "litradar-model-actions" });
+    const status = saveRow.createSpan({ cls: "litradar-model-status" });
+    const save = saveRow.createEl("button", { cls: "litradar-btn", text: "保存模型设置" });
+    save.onclick = async () => {
+      const model = modelInput.value.trim();
+      const baseUrl = baseInput.value.trim();
+      if (!model || !baseUrl) {
+        status.setText("模型 ID 和 base URL 不能为空");
+        return;
+      }
+      save.disabled = true;
+      status.setText("保存中…");
+      const modelOk = await this.plugin.engineConfigSet("llm.model", model);
+      const baseOk = modelOk ? await this.plugin.engineConfigSet("llm.base_url", baseUrl) : false;
+      save.disabled = false;
+      if (modelOk && baseOk) {
+        status.setText("已保存，下次抓取生效");
+        new Notice("模型设置已保存");
+        void this.refresh();
+      } else {
+        status.setText("保存失败，请查看面板日志");
+      }
+    };
+  }
+
   private renderCoverage(container: HTMLElement, data: PanelData): void {
     const section = container.createEl("section", { cls: "litradar-panel litradar-coverage" });
     section.createEl("h5", { text: "覆盖情况" });
@@ -497,9 +1066,31 @@ export class LitradarView extends ItemView {
       return;
     }
 
-    const table = section.createEl("table", { cls: "litradar-table" });
+    const metaFor = (name: string): Partial<JournalScan> => {
+      const stored = storeRows.find((scan) => scan.journal === name);
+      const history = data.scans[name];
+      return {
+        cadence: stored?.cadence ?? history?.cadence,
+        weekday: stored?.weekday ?? history?.weekday,
+        volume: stored?.volume ?? history?.volume,
+        issue: stored?.issue ?? history?.issue,
+        issue_identifier: stored?.issue_identifier ?? history?.issue_identifier,
+        cover_date: stored?.cover_date ?? history?.cover_date,
+        surface: stored?.surface ?? history?.surface,
+      };
+    };
+    const weeklyCount = names.filter((name) => metaFor(name).cadence === "weekly").length;
+    const dailyCount = names.length - weeklyCount;
+    const issueCount = names.filter((name) => issueLabel(metaFor(name)) !== "—").length;
+    section.createDiv({
+      cls: "litradar-coverage-summary",
+      text: `日更 ${dailyCount} 本 · 周更 ${weeklyCount} 本 · 已识别本期 ${issueCount} 本`,
+    });
+
+    const tableWrap = section.createDiv({ cls: "litradar-table-wrap" });
+    const table = tableWrap.createEl("table", { cls: "litradar-table" });
     const head = table.createEl("thead").createEl("tr");
-    for (const title of ["期刊", "栏目", "状态", "条数", "上次成功"]) {
+    for (const title of ["期刊", "更新", "本期", "状态", "条数", "上次成功"]) {
       head.createEl("th", { text: title });
     }
     const body = table.createEl("tbody");
@@ -512,6 +1103,7 @@ export class LitradarView extends ItemView {
       const items = liveScan?.items ?? stored?.items_seen ?? 0;
       const reason = liveScan?.reason ?? stored?.reason ?? null;
       const history = data.scans[name];
+      const meta = metaFor(name);
       const row = body.createEl("tr");
       if (isFailed(status)) {
         failedCount += 1;
@@ -519,7 +1111,10 @@ export class LitradarView extends ItemView {
       }
 
       const journalCell = row.createEl("td");
-      journalCell.createEl("div", { text: name });
+      journalCell.createEl("div", { cls: "litradar-journal-name", text: name });
+      if (stored?.surface) {
+        journalCell.createDiv({ cls: "litradar-journal-surface", text: stored.surface });
+      }
       if (reason) journalCell.createEl("div", { cls: "litradar-reason", text: String(reason) });
       if ((history?.consecutive_failures ?? 0) >= 3) {
         journalCell.createEl("div", {
@@ -528,12 +1123,26 @@ export class LitradarView extends ItemView {
         });
       }
 
-      row.createEl("td", { text: stored?.surface ?? "—" });
+      const cadenceCell = row.createEl("td", {
+        cls: `litradar-cadence ${meta.cadence === "weekly" ? "is-weekly" : "is-daily"}`,
+        text: cadenceLabel(meta),
+      });
+      cadenceCell.title =
+        meta.cadence === "weekly"
+          ? "周更期刊：非出版日会显示 off-cycle，不算失败"
+          : "日更/连续出版：每个工作日检查";
+      row.createEl("td", { cls: "litradar-issue", text: issueLabel(meta) });
+
       const statusCell = row.createEl("td", {
         text: scanLabel(status),
         cls: `litradar-scan litradar-scan-${status}`,
       });
       if (liveScan) statusCell.addClass("is-live");
+      if (isFailed(status) || status === "metadata-only") {
+        const retry=journalCell.createEl("button",{text:"只重试本刊"});
+        retry.disabled=!!this.plugin.job;
+        retry.onclick=()=>void this.plugin.runAction("repair",{runId:data.activeRunId || undefined,journal:name});
+      }
       row.createEl("td", { text: String(items) });
       row.createEl("td", { text: formatDateTime(history?.last_ok_at ?? null) });
     }
@@ -555,15 +1164,17 @@ export class LitradarView extends ItemView {
 
   private renderHighlights(container: HTMLElement, data: PanelData): void {
     const section = container.createEl("section", { cls: "litradar-panel litradar-highlights" });
-    const cards = this.highlightCards(data);
-    const cap = data.report?.highlights ?? 8;
+    const cards = this.highlightCards(data).filter(card => this.articleMatches(card.item, data));
+    const cap = data.store?.items?.some(item=>typeof item.extra?.highlight === "boolean") ? cards.length : data.report?.highlights ?? 8;
     section.createEl("h5", {
       text: `与你最相关（${Math.min(cards.length, Math.max(0, cap))} 篇）`,
     });
 
     if (cards.length === 0) {
       let message: string;
-      if (!data.screen) {
+      if (this.hasFilters()) {
+        message = "没有符合筛选条件的推荐文献，试试清除筛选或浏览全部条目。";
+      } else if (!data.screen) {
         message = "未找到 screen.json：本轮可能未启用 LLM，或尚未生成筛选结果。";
       } else if (screenResults(data).length === 0) {
         message = "本轮没有置顶条目。";
@@ -578,18 +1189,21 @@ export class LitradarView extends ItemView {
       const item = card.item;
       const result = card.result;
       const cardEl = section.createDiv({ cls: "litradar-card" });
+      this.renderReadingAction(cardEl, item, data.store?.window?.end || data.activeRunId || undefined);
       const titleRow = cardEl.createDiv({ cls: "litradar-card-title" });
       const url = safeExternalUrl(item.url);
       if (url) {
-        const link = titleRow.createEl("a", { text: item.title, href: url });
+        const link = titleRow.createEl("a", { text: item.title_zh || item.title, href: url });
         link.target = "_blank";
         link.rel = "noopener noreferrer";
       } else {
-        titleRow.setText(item.title);
+        titleRow.setText(item.title_zh || item.title);
       }
 
       const meta = cardEl.createDiv({ cls: "litradar-card-meta" });
       meta.createSpan({ text: item.journal });
+      meta.createSpan({ text: " · " });
+      meta.createSpan({ cls: "litradar-card-type", text: articleTypeLabel(item) });
       meta.createSpan({ text: " · " });
       meta.createSpan({ text: articleDate(item) });
       if (typeof result.relevance === "number") {
@@ -606,6 +1220,7 @@ export class LitradarView extends ItemView {
       const abstract = result.abstract_en || item.abstract_raw;
       if (abstract) {
         const details = cardEl.createEl("details", { cls: "litradar-abstract" });
+        details.dataset.stateKey = `abstract:${item.id}`;
         details.createEl("summary", {
           text: result.abstract_mode === "verbatim" ? "英文摘要（原文）" : "英文摘要（概述）",
         });
@@ -625,6 +1240,9 @@ export class LitradarView extends ItemView {
   private highlightCards(data: PanelData): HighlightCard[] {
     const byId = new Map(newArticles(data.store).map((item) => [item.id, item]));
     const cards: HighlightCard[] = [];
+    if ([...byId.values()].some(item => typeof item.extra?.highlight === "boolean")) {
+      return [...byId.values()].filter(item=>item.extra?.highlight === true && !item.extra?.superseded_by).map(item=>({item,result:{id:item.id,relevant:true,relevance:Number(item.extra?.rank_score || 0),why:item.why_zh}})).sort((a,b)=>(b.result.relevance || 0)-(a.result.relevance || 0));
+    }
     for (const result of screenResults(data)) {
       if (result.relevant !== true) continue;
       const item = byId.get(result.id);
@@ -635,12 +1253,32 @@ export class LitradarView extends ItemView {
   }
 
   private renderAllItems(container: HTMLElement, data: PanelData): void {
-    const items = newArticles(data.store);
-    const details = container.createEl("details", { cls: "litradar-panel litradar-all" });
-    details.createEl("summary", { text: `全部条目（${items.length} 篇）` });
-
+    const items = newArticles(data.store).filter(item => this.articleMatches(item, data));
     if (items.length === 0) {
-      details.createDiv({ cls: "litradar-empty-line", text: this.emptyItemsMessage(data) });
+      const details = container.createEl("details", { cls: "litradar-panel litradar-all" });
+      details.createEl("summary", { text: "全部条目（0 篇）" });
+      details.createDiv({ cls: "litradar-empty-line", text: this.hasFilters() ? "没有符合筛选条件的条目，试试清除筛选。" : this.emptyItemsMessage(data) });
+      return;
+    }
+
+    const journalItems = items.filter((item) => !isPreprint(item));
+    const preprintItems = items.filter((item) => isPreprint(item));
+    this.renderItemsSection(container, data, "全部期刊条目", journalItems, "期刊");
+    this.renderItemsSection(container, data, "全部预印本", preprintItems, "预印本");
+  }
+
+  private renderItemsSection(
+    container: HTMLElement,
+    data: PanelData,
+    title: string,
+    items: Article[],
+    kind: string,
+  ): void {
+    const details = container.createEl("details", { cls: "litradar-panel litradar-all" });
+    details.addClass(kind === "预印本" ? "litradar-all-preprints" : "litradar-all-journals");
+    details.createEl("summary", { text: `${title}（${items.length} 篇）` });
+    if (items.length === 0) {
+      details.createDiv({ cls: "litradar-empty-line", text: `本日没有${kind}新条目。` });
       return;
     }
 
@@ -658,22 +1296,36 @@ export class LitradarView extends ItemView {
       group.createEl("h6", { text: `${journal}（${articles.length} 篇）` });
       for (const item of articles) {
         const entry = group.createEl("details", { cls: "litradar-item" });
+        entry.dataset.stateKey = `article:${item.id}`;
         const summary = entry.createEl("summary");
+        summary.createSpan({
+          cls: `litradar-item-type${isPreprint(item) ? " is-preprint" : ""}`,
+          text: articleTypeLabel(item),
+        });
         const url = safeExternalUrl(item.url);
         if (url) {
-          const title = summary.createEl("a", { cls: "litradar-item-title", text: item.title, href: url });
-          title.target = "_blank";
-          title.rel = "noopener noreferrer";
-          title.addEventListener("click", (event) => event.stopPropagation());
+          const titleLink = summary.createEl("a", {
+            cls: "litradar-item-title",
+            text: item.title_zh || item.title,
+            href: url,
+          });
+          titleLink.target = "_blank";
+          titleLink.rel = "noopener noreferrer";
+          titleLink.addEventListener("click", (event) => event.stopPropagation());
         } else {
           summary.createSpan({ cls: "litradar-item-title", text: item.title });
         }
+        const subject = articleSubject(item);
         summary.createSpan({
           cls: "litradar-item-meta",
-          text: ` · ${articleDate(item)}${item.surface ? ` · ${item.surface}` : ""}`,
+          text:
+            ` · ${articleDate(item)}` +
+            (item.surface ? ` · ${item.surface}` : "") +
+            (subject ? ` · ${subject}` : ""),
         });
 
         const body = entry.createDiv({ cls: "litradar-item-body" });
+        this.renderReadingAction(body, item, data.store?.window?.end || data.activeRunId || undefined);
         const result = byScreen.get(item.id);
         if (result && typeof result.relevance === "number") {
           body.createDiv({
@@ -869,7 +1521,8 @@ export class LitradarView extends ItemView {
     section.createEl("p", {
       text:
         `没有找到 ${data.storeDir}/store/ 下的抓取结果。` +
-        "点击「重抓」，或运行 `python -m litradar fetch`；面板每次轮询都会重新读取目录。",
+        `计划时间是 ${data.schedule.time}（${data.schedule.tz}）。` +
+        "点击上方「立即抓取并生成」，或运行 `python -m litradar run`。",
     });
     if (Object.keys(data.scans).length > 0) {
       section.createEl("p", {
@@ -884,7 +1537,7 @@ export class LitradarView extends ItemView {
     const footer = container.createDiv({ cls: "litradar-footer" });
     footer.setText(
       `${data.storeDir} 只读 · 引擎 ${engine.engine ?? "未检测"}` +
-        `${engine.schema ? `（schema ${engine.schema}）` : ""} · 插件 0.1.0`,
+        `${engine.schema ? `（schema ${engine.schema}）` : ""} · 插件 0.3.2`,
     );
   }
 

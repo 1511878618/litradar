@@ -7,11 +7,18 @@
  * file: the front-end never touches store/, state/seen.json or report files.
  */
 
+import { existsSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { App, FileSystemAdapter, TFile } from "obsidian";
 import type {
+  Article,
+  LlmInfo,
   PanelData,
+  ProfileInfo,
   ReportMeta,
   ScanStateMap,
+  ScheduleInfo,
   ScoresPayload,
   ScreenPayload,
   StorePayload,
@@ -85,6 +92,112 @@ function mapDateSourceNote(source: string | undefined): string {
 /** Presentation-only helper used by the panel and its date labels. */
 export function dateSourceNote(source: string | undefined): string {
   return mapDateSourceNote(source);
+}
+
+interface ScheduleConfig {
+  kind: string;
+  time: string;
+  tz: string;
+}
+
+const DEFAULT_SCHEDULE: ScheduleConfig = {
+  kind: "daily",
+  time: "09:00",
+  tz: "Asia/Shanghai",
+};
+
+/** Parse the small, stable `schedule:` block from config.yaml / config.local.yaml. */
+export function parseScheduleConfig(text: string): Partial<ScheduleConfig> {
+  const result: Partial<ScheduleConfig> = {};
+  let inSchedule = false;
+  for (const rawLine of text.replace(/\r\n/g, "\n").split("\n")) {
+    if (/^schedule:\s*(?:#.*)?$/.test(rawLine)) {
+      inSchedule = true;
+      continue;
+    }
+    if (!inSchedule) continue;
+    if (/^\S/.test(rawLine)) {
+      inSchedule = false;
+      continue;
+    }
+    const match = rawLine.match(/^\s+(kind|time|tz):\s*(?:"([^"]*)"|'([^']*)'|([^#\s]+))/);
+    if (!match) continue;
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    if (value) result[match[1] as keyof ScheduleConfig] = value;
+  }
+  return result;
+}
+
+function nextRunAt(time: string, now = new Date()): string | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(time.trim());
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  const candidate = new Date(now);
+  candidate.setHours(hour, minute, 0, 0);
+  if (candidate.getTime() <= now.getTime()) candidate.setDate(candidate.getDate() + 1);
+  return candidate.toISOString();
+}
+
+function launchAgentInstalled(): boolean {
+  if (process.platform !== "darwin") return false;
+  try {
+    return existsSync(join(homedir(), "Library", "LaunchAgents", "com.litradar.daily.plist"));
+  } catch {
+    return false;
+  }
+}
+
+function unquoteYaml(value: string): string {
+  const text = value.trim();
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    return text.slice(1, -1);
+  }
+  return text.replace(/\s+#.*$/, "").trim();
+}
+
+/** The indented body of a top-level YAML section, or the whole text. */
+function yamlBlock(text: string, section?: string): string {
+  if (!section) return text;
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const start = lines.findIndex((line) => new RegExp(`^${section}:\\s*(?:#.*)?$`).test(line));
+  if (start < 0) return "";
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (/^\S/.test(lines[index])) {
+      end = index;
+      break;
+    }
+  }
+  return lines.slice(start + 1, end).join("\n");
+}
+
+function yamlScalar(text: string, key: string): string {
+  const match = text.match(
+    new RegExp(`^\\s*${key}:\\s*(?:"([^"]*)"|'([^']*)'|([^#\\n]*))\\s*$`, "m"),
+  );
+  if (!match) return "";
+  return unquoteYaml(match[1] ?? match[2] ?? match[3] ?? "");
+}
+
+function yamlList(text: string, key: string): string[] {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const start = lines.findIndex((line) => new RegExp(`^\\s*${key}:\\s*(?:#.*)?$`).test(line));
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    const match = line.match(/^\s*-\s*(.+)$/);
+    if (!match) break;
+    const value = unquoteYaml(match[1]);
+    if (value) out.push(value);
+  }
+  return out;
 }
 
 export class LitradarStore {
@@ -201,7 +314,36 @@ export class LitradarStore {
   async readStore(runId: string, warnings?: string[]): Promise<StorePayload | null> {
     const payload = await this.readJson<StorePayload>(this.path("store", `${runId}.json`), warnings);
     if (!isRecord(payload)) return null;
+    const presentation = await this.readJson<{titles?: Record<string,string>; summaries?: Record<string,string>; why?: Record<string,string>; extras?: Record<string, Record<string,unknown>>}>(this.path("runs", runId, "presentation.json"));
+    for (const item of payload.items || []) {
+      item.title_zh = presentation?.titles?.[item.id];
+      item.summary_zh = presentation?.summaries?.[item.id];
+      item.why_zh = presentation?.why?.[item.id];
+      item.extra = {...item.extra, ...presentation?.extras?.[item.id]};
+    }
     return payload;
+  }
+
+  async readArchive(days: number): Promise<Article[]> {
+    const ids = (await this.listRunIds()).filter(id => /^\d{4}-\d{2}-\d{2}$/.test(id)).sort().reverse();
+    const cutoff = days ? Date.now() - days * 86400000 : 0;
+    const byKey = new Map<string, Article>();
+    const versions = await this.readJson<Record<string, unknown[]>>(this.path("state", "versions.json"));
+    for (const id of ids) {
+      if (days && Date.parse(id + "T23:59:59") < cutoff) continue;
+      const store = await this.readStore(id);
+      for (const item of store?.items || []) {
+        const key = (item.doi || item.id).toLowerCase();
+        const previous = byKey.get(key);
+        if (previous) {
+          (previous.extra!.report_dates as string[]).push(id);
+        } else {
+          byKey.set(key, {...item, extra: {...item.extra, report_date: id, report_dates: [id],
+            versions: versions?.[(item.doi || "").toLowerCase()] || item.extra?.versions}});
+        }
+      }
+    }
+    return [...byKey.values()];
   }
 
   async readScreen(runId: string, warnings?: string[]): Promise<ScreenPayload | null> {
@@ -300,6 +442,64 @@ export class LitradarStore {
     return file instanceof TFile ? file : null;
   }
 
+  /** Current research profile.  profile.yaml wins; config.yaml is the fallback. */
+  async readProfile(): Promise<ProfileInfo> {
+    const profileText = (await this.readText(this.path("profile.yaml"))) ?? "";
+    if (profileText.trim()) {
+      return {
+        direction: yamlScalar(profileText, "direction"),
+        keywords: yamlList(profileText, "keywords"),
+        sources: yamlList(profileText, "sources"),
+        model: yamlScalar(profileText, "model"),
+        updatedAt: yamlScalar(profileText, "created_at") || null,
+        fromZotero: true,
+      };
+    }
+    const configText = (await this.readText(this.path("config.yaml"))) ?? "";
+    return {
+      direction: yamlScalar(configText, "direction"),
+      keywords: yamlList(yamlBlock(configText, "screening"), "keywords"),
+      sources: [],
+      model: "",
+      updatedAt: null,
+      fromZotero: false,
+    };
+  }
+
+  /** Effective model + base URL; config.local.yaml overrides config.yaml. */
+  async readLlm(): Promise<LlmInfo> {
+    const baseText = (await this.readText(this.path("config.yaml"))) ?? "";
+    const localText = (await this.readText(this.path("config.local.yaml"))) ?? "";
+    const baseBlock = yamlBlock(baseText, "llm");
+    const localBlock = yamlBlock(localText, "llm");
+    return {
+      model: yamlScalar(localBlock, "model") || yamlScalar(baseBlock, "model") || "deepseek-chat",
+      baseUrl:
+        yamlScalar(localBlock, "base_url") ||
+        yamlScalar(baseBlock, "base_url") ||
+        "https://api.deepseek.com",
+    };
+  }
+
+  /** Schedule + freshness card data.  Reads config only; never writes it. */
+  async readSchedule(today: string, store: StorePayload | null): Promise<ScheduleInfo> {
+    const baseText = (await this.readText(this.path("config.yaml"))) ?? "";
+    const localText = (await this.readText(this.path("config.local.yaml"))) ?? "";
+    const config: ScheduleConfig = {
+      ...DEFAULT_SCHEDULE,
+      ...parseScheduleConfig(baseText),
+      ...parseScheduleConfig(localText),
+    };
+    const lastScanAt = typeof store?.scan_at === "string" ? store.scan_at : null;
+    return {
+      ...config,
+      installed: launchAgentInstalled(),
+      nextRunAt: nextRunAt(config.time),
+      lastScanAt,
+      todayFetched: !!lastScanAt && lastScanAt.slice(0, 10) === today,
+    };
+  }
+
   /**
    * Load the whole read-only snapshot. Each file is optional; a malformed file
    * produces a warning instead of a blank panel.
@@ -345,6 +545,8 @@ export class LitradarStore {
       const scanDate = store.scan_at.slice(0, 10);
       fetchedToday = scanDate === today;
     }
+    const schedule = await this.readSchedule(today, store);
+    const [profile, llm] = await Promise.all([this.readProfile(), this.readLlm()]);
 
     return {
       initialized,
@@ -360,6 +562,9 @@ export class LitradarStore {
       runLogTail,
       today,
       fetchedToday,
+      schedule,
+      profile,
+      llm,
       warnings,
     };
   }

@@ -546,3 +546,436 @@
 .litradar-settings-about p {
   margin: 4px 0;
 }
+
+/* Zotero 画像构建器 */
+.litradar-collection-filter {
+  width: 100%;
+  margin-bottom: 6px;
+}
+.litradar-collection-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+}
+.litradar-collection-item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+  font-size: var(--font-ui-small);
+}
+.litradar-profile-status {
+  color: var(--text-muted);
+}
+
+/* ----------------------------------------------------------- schedule card */
+
+.litradar-btn-primary {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.litradar-btn-primary:hover:not(:disabled) {
+  background: var(--interactive-accent-hover);
+}
+
+.litradar-schedule {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.litradar-schedule-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.litradar-schedule-title h5 {
+  margin: 0;
+}
+
+.litradar-schedule-sub {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.litradar-pill {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.litradar-pill.is-ok {
+  border-color: var(--text-success);
+  color: var(--text-success);
+}
+
+.litradar-pill.is-warn {
+  border-color: var(--text-warning);
+  color: var(--text-warning);
+}
+
+.litradar-schedule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.litradar-schedule-cell {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--background-primary);
+}
+
+.litradar-schedule-cell.is-warn .litradar-schedule-value {
+  color: var(--text-warning);
+}
+
+.litradar-schedule-label {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.litradar-schedule-value {
+  margin-top: 1px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.litradar-schedule-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* -------------------------------------------------------- coverage details */
+
+.litradar-coverage-summary {
+  margin: -2px 0 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.litradar-journal-name {
+  font-weight: 600;
+}
+
+.litradar-journal-surface {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.litradar-cadence {
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.litradar-cadence.is-weekly {
+  color: var(--text-accent);
+}
+
+.litradar-issue {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.litradar-schedule-hint {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.litradar-table-wrap {
+  overflow-x: auto;
+}
+
+/* ------------------------------------------------------- research + model */
+
+.litradar-research-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.litradar-research-sub {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.litradar-profile-direction {
+  margin: 8px 0 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.litradar-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.litradar-keyword {
+  padding: 1px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.litradar-research-divider {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
+.litradar-model-note {
+  margin-bottom: 6px;
+}
+
+.litradar-model-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.litradar-model-select {
+  flex: 1 1 170px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.litradar-model-input {
+  flex: 1 1 130px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.litradar-model-base {
+  flex: 2 1 210px;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.litradar-model-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.litradar-model-status {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+/* ------------------------------------------------------------------ modal */
+
+.litradar-modal-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.litradar-modal-list {
+  max-height: 260px;
+  margin: 8px 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.litradar-modal-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.litradar-modal-name input {
+  flex: 1;
+}
+
+.litradar-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.litradar-all-journals > summary {
+  color: var(--text-normal);
+}
+
+.litradar-all-preprints > summary {
+  color: var(--text-accent);
+}
+
+.litradar-item-type {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.litradar-item-type.is-preprint {
+  border-color: var(--text-accent);
+  color: var(--text-accent);
+}
+
+.litradar-card-type {
+  color: var(--text-accent);
+}
+
+/* Reading layout: follow the user's text size; keep metadata secondary. */
+.litradar-view {
+  font-size: var(--font-text-size, 16px);
+  line-height: 1.7;
+  padding: 20px 24px 32px;
+  container-type: inline-size;
+}
+.litradar-panel { margin-top: 24px; padding-top: 20px; }
+.litradar-panel h5 { font-size: 1em; margin-bottom: 14px; }
+.litradar-panel h6 { font-size: .9em; }
+.litradar-card {
+  padding: 18px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  background: var(--background-primary-alt);
+}
+.litradar-card-title { font-size: 1em; line-height: 1.55; }
+.litradar-card-meta, .litradar-item-meta { font-size: .8em; line-height: 1.6; }
+.litradar-card-why, .litradar-abstract p,
+.litradar-abstract-text { font-size: .95em; line-height: 1.75; }
+.litradar-card-why { margin-top: 12px; }
+.litradar-item-title { font-size: .95em; line-height: 1.6; }
+.litradar-item { padding-top: 10px; padding-bottom: 10px; }
+.litradar-all > summary { font-size: .95em; padding: 8px 0; }
+.litradar-view button:focus-visible,
+.litradar-view a:focus-visible,
+.litradar-view summary:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 3px;
+}
+@container (max-width: 480px) {
+  .litradar-card { padding: 12px; }
+  .litradar-item-meta { display: block; margin-top: 4px; }
+  .litradar-card-meta { overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .litradar-progress-fill { transition: none; }
+  .litradar-progress-indeterminate { animation: none; }
+}
+
+/* Reading workflow controls wrap within narrow Obsidian sidebars. */
+.litradar-reading-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0;
+}
+.litradar-reading-controls input,
+.litradar-reading-controls select { max-width: 100%; min-width: 0; }
+.litradar-reading-controls .litradar-article-search { flex: 1 1 260px; }
+.litradar-reading-controls small { flex-basis: 100%; color: var(--text-muted); font-size: .8em; }
+.litradar-reading-action {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0;
+  font-size: .8em; color: var(--text-muted);
+}
+.litradar-library > summary { cursor: pointer; font-weight: 600; }
+.litradar-library-tab { margin: 12px 0; }
+.litradar-view select:focus-visible,
+.litradar-view input:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+
+.litradar-zotero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0; }
+.litradar-zotero-actions .litradar-reading-action { margin: 0 8px 0 0; }
+.litradar-zotero-action { font-size: var(--font-ui-small); }
+
+
+/* Litradar Markdown reports. Scoped to cssclasses: [litradar-report]. */
+.litradar-report {
+  --lr-blue: 76, 110, 245;
+  --lr-green: 27, 147, 109;
+  --lr-amber: 203, 139, 30;
+  --file-line-width: 940px;
+  --line-height-normal: 1.75;
+}
+.litradar-report .markdown-preview-sizer { max-width: 940px; }
+.litradar-report h1 {
+  padding: 0 0 18px;
+  border-bottom: 3px solid rgba(var(--lr-blue), .65);
+  letter-spacing: -.035em;
+  line-height: 1.35;
+}
+.litradar-report h2 {
+  margin-top: 2.4em;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(var(--lr-blue), .08);
+  border-left: 4px solid rgb(var(--lr-blue));
+  font-size: 1.28em;
+}
+.litradar-report :is(h3, h4, h5, h6) {
+  line-height: 1.55;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 1.08em;
+  font-weight: 650;
+  color: var(--text-normal);
+  margin-top: 1.8em;
+  margin-bottom: .65em;
+}
+.litradar-report .callout {
+  border: 1px solid rgba(var(--callout-color), .16);
+  border-left: 4px solid rgb(var(--callout-color));
+  border-radius: 12px;
+  padding: 16px 20px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .025);
+  margin: .75em 0 1.7em;
+  mix-blend-mode: normal;
+}
+.litradar-report .callout[data-callout="abstract"],
+.litradar-report .callout[data-callout="info"] { --callout-color: var(--lr-blue); }
+.litradar-report .callout[data-callout="tip"] { --callout-color: var(--lr-green); }
+.litradar-report .callout[data-callout="warning"] { --callout-color: var(--lr-amber); }
+.litradar-report .callout[data-callout="abstract"] {
+  background: linear-gradient(120deg, rgba(var(--lr-blue), .13), rgba(var(--lr-green), .05));
+}
+.litradar-report .callout-title { font-size: .87em; letter-spacing: .025em; margin-bottom: 8px; }
+.litradar-report .callout-content { font-size: .94em; overflow-wrap: anywhere; }
+.litradar-report .callout-content > p:first-child { color: var(--text-muted); }
+.litradar-report .callout-content > :last-child { margin-bottom: 0; }
+.litradar-report .callout-content a { text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.litradar-report table { width: 100%; font-size: .88em; }
+.litradar-report th { background: rgba(var(--lr-blue), .09); }
+.litradar-report tbody tr:nth-child(even) { background: var(--background-secondary); }
+.litradar-report img { border-radius: 9px; max-height: 360px; object-fit: contain; }
+@media (max-width: 700px) {
+  .litradar-report .callout { padding: 12px 14px; }
+  .litradar-report h2 { padding: 8px 12px; }
+}
+@media print {
+  .litradar-report .callout { box-shadow: none; break-inside: avoid; }
+}

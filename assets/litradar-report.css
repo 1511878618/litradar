@@ -1,0 +1,65 @@
+/* Litradar Markdown reports. Scoped to cssclasses: [litradar-report]. */
+.litradar-report {
+  --lr-blue: 76, 110, 245;
+  --lr-green: 27, 147, 109;
+  --lr-amber: 203, 139, 30;
+  --file-line-width: 940px;
+  --line-height-normal: 1.75;
+}
+.litradar-report .markdown-preview-sizer { max-width: 940px; }
+.litradar-report h1 {
+  padding: 0 0 18px;
+  border-bottom: 3px solid rgba(var(--lr-blue), .65);
+  letter-spacing: -.035em;
+  line-height: 1.35;
+}
+.litradar-report h2 {
+  margin-top: 2.4em;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(var(--lr-blue), .08);
+  border-left: 4px solid rgb(var(--lr-blue));
+  font-size: 1.28em;
+}
+.litradar-report :is(h3, h4, h5, h6) {
+  line-height: 1.55;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 1.08em;
+  font-weight: 650;
+  color: var(--text-normal);
+  margin-top: 1.8em;
+  margin-bottom: .65em;
+}
+.litradar-report .callout {
+  border: 1px solid rgba(var(--callout-color), .16);
+  border-left: 4px solid rgb(var(--callout-color));
+  border-radius: 12px;
+  padding: 16px 20px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, .025);
+  margin: .75em 0 1.7em;
+  mix-blend-mode: normal;
+}
+.litradar-report .callout[data-callout="abstract"],
+.litradar-report .callout[data-callout="info"] { --callout-color: var(--lr-blue); }
+.litradar-report .callout[data-callout="tip"] { --callout-color: var(--lr-green); }
+.litradar-report .callout[data-callout="warning"] { --callout-color: var(--lr-amber); }
+.litradar-report .callout[data-callout="abstract"] {
+  background: linear-gradient(120deg, rgba(var(--lr-blue), .13), rgba(var(--lr-green), .05));
+}
+.litradar-report .callout-title { font-size: .87em; letter-spacing: .025em; margin-bottom: 8px; }
+.litradar-report .callout-content { font-size: .94em; overflow-wrap: anywhere; }
+.litradar-report .callout-content > p:first-child { color: var(--text-muted); }
+.litradar-report .callout-content > :last-child { margin-bottom: 0; }
+.litradar-report .callout-content a { text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.litradar-report table { width: 100%; font-size: .88em; }
+.litradar-report th { background: rgba(var(--lr-blue), .09); }
+.litradar-report tbody tr:nth-child(even) { background: var(--background-secondary); }
+.litradar-report img { border-radius: 9px; max-height: 360px; object-fit: contain; }
+@media (max-width: 700px) {
+  .litradar-report .callout { padding: 12px 14px; }
+  .litradar-report h2 { padding: 8px 12px; }
+}
+@media print {
+  .litradar-report .callout { box-shadow: none; break-inside: avoid; }
+}

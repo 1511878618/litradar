@@ -6,7 +6,7 @@ Litradar 是一个**本地 Python 引擎**的 Obsidian 薄前端：展示每日�
 > 插件只做「展示 / 触发 / 配置」。日报、`store/`、`seen.json`、相关度、日期窗
 > 全部由 `litradar` 引擎产出，插件**只读**，不会写 `.litradar` 下的任何文件。
 
-- 插件版本：0.1.0
+- 插件版本：0.4.0
 - 最低 Obsidian：1.5.0
 - 平台：**仅桌面版**（`isDesktopOnly: true`）
 - 最低引擎版本：默认 2.0.0（可在设置里调整）
@@ -98,6 +98,16 @@ cp manifest.json main.js styles.css "<vault>/.obsidian/plugins/litradar/"
    ```
 
    插件**不会**替你创建目录（只读原则）。
+
+### 5. Zotero 联动与配套插件（可选）
+
+使用 Zotero 阅读或 PDF 功能前，请按 [Zotero 联动安装教程](../docs/zotero-setup.md) 配置：
+
+- **Zotero 10**：开启「设置 → 高级 → 允许其他应用通信」，首次写入按 Zotero 弹窗授权。
+- **Reading List**：阅读状态联动时需要，在 Zotero 中安装，用于完整的待读、阅读中、已读管理；已安装的用户只需启用 Read Status 列并检查设置。
+- **Zotero Bridge 0.2.0**：Reading List 状态联动或点击“下载 PDF”时需要；在 Zotero 中安装 [XPI](../zotero-litradar/litradar-pdf-bridge-0.2.0.xpi)。保存条目、定位条目及打开已有 PDF 不依赖这个扩展。
+
+**已支持 Reading List 双向状态联动及自定义状态。** Zotero 中的变化在面板刷新后同步；旧版标签和本地清单可显式迁移，已有 Reading List 状态优先保留。 详细操作、兼容范围、文献保存子文件夹设置及故障排查见上述教程。
 
 ---
 
@@ -258,3 +268,35 @@ pnpm run dev
 - stdout 只解析 JSONL，人类日志走 stderr；行缓冲，不能假设 chunk 边界；
 - 取消/超时必须杀进程树（Windows `taskkill /T /F`，其他 `SIGTERM`）；
 - 不自动升级引擎、不自动创建计划任务、不保存 API key。
+
+## Zotero 阅读与 PDF
+
+阅读清单直接读取 Reading List 的 `Read_Status` 和 `Read_Status_Date`，状态选项来自 Reading List 当前配置；更新通过 Zotero Bridge 0.2.0 调用 Reading List 的方法。新建条目与阅读状态写入使用 Zotero 10 本地 API，首次操作由 Zotero 自己请求授权。保存位置默认按日报日期自动创建 `Litradar 文献雷达 / YYYY-MM-DD`；设置页也可选择其他位置，收藏夹以完整父子路径显示并按稳定 key 识别。原有插件本地清单保留，可在“Zotero 阅读”区域迁移，只有成功写入 Zotero 的条目才移除旧记录。
+
+启用 Zotero 设置 → 高级 → 允许其他应用通信。点击“保存到 Zotero”复用已有条目或新建；“在 Zotero 打开”定位条目；“打开 PDF”使用实际 PDF 附件的 Zotero URI。
+
+“下载 PDF”需要安装仓库 `zotero-litradar/` 中的 Zotero Bridge 0.2.0 XPI（Zotero 10.0.x），由 Zotero 自己执行“查找可用文件”。Litradar 不另建 PDF 下载目录。任务受理与下载成功分开显示，下载进度和失败原因在 Zotero 原生窗口中查看。
+
+## 自动抓取与定时
+
+打开 Obsidian 设置 → Litradar → **自动抓取与定时**，或在雷达面板“抓取计划”区域点击 **自动抓取设置**。
+
+- **启用 Obsidian 内自动抓取**：默认开启；关闭后停止插件内的计划检查，不取消已开始的任务。
+- **每日抓取时间**：选择时间后点击“保存时间”，写入引擎的 `schedule.time`；时区在设置旁显示，取自 `schedule.tz`。默认每天 09:00、Asia/Shanghai。
+- Obsidian 需保持运行；超过计划时间才启动，也会检查补抓。已有当日抓取及日报时不会重复执行。
+- 面板分别显示“Obsidian 自动抓取：已开启/已关闭”和“系统后台定时：已安装/未安装”。系统后台定时是独立任务，不受这个开关控制，需单独安装；修改插件内时间也不会重装已存在的系统任务。
+
+自动抓取依赖可用的 Python 引擎，电脑关机或睡眠时不会执行。
+
+### 日报中文标题与排版
+
+“设置 → Litradar → 日报中文标题”可启用公开接口翻译，无需密钥。只发送文献标题，保留英文原题并缓存成功译文；接口失败不影响日报生成。设置在下一次生成或点击“重生成”时生效。日报用蓝色期刊卡片、绿色推荐提示、橙色预印本提示区分内容，样式仅作用于带 `litradar-report` cssclass 的笔记。公开网页接口的限制与完整配置见仓库 README 的“日报排版与中文标题”。
+
+### 0.4 新入口
+
+- 覆盖表：**只重试本刊**；工具栏：**重试失败期刊**、**补齐／回查迟到**。
+- **跨批次文献库**：加载最近一周、一个月或全部历史，支持中文搜索和主题／阅读状态筛选。
+- 文献卡片：**刷新入库／PDF 状态**、**推荐反馈**、有证据的**关联版本**。
+- 设置：**自动补齐与迟到回查**开关、回查天数 1–7。
+
+使用现有 Reading List 和 Zotero Bridge 0.2.0 即可，无需更新 Zotero 插件。完整说明见 [每日阅读与恢复指南](../docs/reading-workflow.md)。更新前端文件后，重新启用 Litradar 或重启 Obsidian。

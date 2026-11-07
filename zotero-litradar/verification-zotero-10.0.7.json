@@ -1,0 +1,14 @@
+{
+  "version": "10.0.7",
+  "addon": {
+    "version": "0.1.2",
+    "isActive": true,
+    "appDisabled": false,
+    "userDisabled": false,
+    "isCompatible": true,
+    "providesUpdatesSecurely": true
+  },
+  "endpointRegistered": true,
+  "method": "Native AddonManager.getInstallForFile().install() in an isolated temporary profile with a separate empty data directory",
+  "artifact": "litradar-pdf-bridge-0.1.2.xpi"
+}

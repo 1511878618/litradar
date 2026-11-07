@@ -8,6 +8,8 @@
  */
 
 import { FileSystemAdapter, Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { findReadingEntry, normalizeLibrary, type ReadingStatus, type ZoteroReadingEntry, type ZoteroCollection, type ReadingListStatusOption } from "./reading";
+import type { Article } from "./types";
 import { Bridge, BridgeError } from "./bridge";
 import { LitradarSettingTab } from "./settings";
 import { LitradarStore } from "./store";
@@ -27,21 +29,29 @@ import {
   type VersionPayload,
 } from "./types";
 
-export const PLUGIN_VERSION = "0.1.0";
+export const PLUGIN_VERSION = "0.4.0";
 
 const ACTION_LABELS: Record<ActionKind, string> = {
-  fetch: "重新抓取",
+  run: "抓取并生成",
+  fetch: "只抓取",
   render: "重新生成日报",
   embed: "重算相关度",
   doctor: "引擎自检",
+  schedule: "安装定时任务",
+  repair: "重试失败期刊",
+  maintain: "补齐漏抓与迟到记录",
 };
 
 /** Budgets from docs/design/02-engine.md §6, with a little headroom. */
 const TIMEOUTS: Record<ActionKind, number> = {
+  run: 17 * 60 * 1000,
   fetch: 11 * 60 * 1000,
   render: 6 * 60 * 1000,
   embed: 6 * 60 * 1000,
   doctor: 2 * 60 * 1000,
+  schedule: 60 * 1000,
+  repair: 20 * 60 * 1000,
+  maintain: 60 * 60 * 1000,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -88,6 +98,9 @@ export default class LitradarPlugin extends Plugin {
   private bridge!: Bridge;
   private listeners = new Set<() => void>();
   private checkTimer: number | null = null;
+  private autoTimer: number | null = null;
+  private autoStartTimer: number | null = null;
+  private autoRunDay: string | null = null;
   private checkToken = 0;
   private bridgeDirty = false;
 
@@ -110,8 +123,15 @@ export default class LitradarPlugin extends Plugin {
       },
     });
     this.addCommand({
+      id: "litradar-run",
+      name: "抓取并生成今日日报",
+      callback: () => {
+        void this.runAction("run");
+      },
+    });
+    this.addCommand({
       id: "litradar-fetch",
-      name: "重新抓取（今天）",
+      name: "只抓取（不生成日报）",
       callback: () => {
         void this.runAction("fetch");
       },
@@ -149,6 +169,7 @@ export default class LitradarPlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       void this.checkEngine(false);
+      this.startAutoRun();
     });
   }
 
@@ -157,8 +178,10 @@ export default class LitradarPlugin extends Plugin {
       window.clearTimeout(this.checkTimer);
       this.checkTimer = null;
     }
+    this.stopAutoRun();
     // Do not leave a python process behind when the plugin is disabled.
     if (this.job) this.bridge?.kill();
+    for (const bridge of this.zoteroBridges) bridge.kill();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_LITRADAR);
   }
 
@@ -180,17 +203,193 @@ export default class LitradarPlugin extends Plugin {
     const seconds = Number(merged.autoRefreshSeconds);
     merged.autoRefreshSeconds = Number.isFinite(seconds) ? clamp(Math.round(seconds), 0, 3600) : 30;
     merged.showLogTail = merged.showLogTail !== false;
+    merged.autoRunEnabled = merged.autoRunEnabled !== false;
     merged.minEngine =
       typeof merged.minEngine === "string" && merged.minEngine.trim()
         ? merged.minEngine.trim()
         : DEFAULT_SETTINGS.minEngine;
+    merged.profileCollections = Array.isArray(merged.profileCollections)
+      ? merged.profileCollections.filter((name): name is string => typeof name === "string")
+      : [];
+    merged.profileName =
+      typeof merged.profileName === "string" ? merged.profileName.trim() : "";
+    merged.zoteroTargetCollection = typeof merged.zoteroTargetCollection === "string" ? merged.zoteroTargetCollection : "";
+    merged.readingListTodoStatus = typeof merged.readingListTodoStatus === "string" ? merged.readingListTodoStatus : "To Read";
+    merged.readingListReadStatus = typeof merged.readingListReadStatus === "string" ? merged.readingListReadStatus : "Read";
+    merged.readingLibrary = normalizeLibrary(merged.readingLibrary);
     this.settings = merged;
+  }
+
+  zoteroLibrary: ZoteroReadingEntry[] = [];
+  zoteroStatuses: ReadingListStatusOption[] = [];
+  zoteroLegacyCount = 0;
+  zoteroError = "";
+  private zoteroLoadedAt = 0;
+  private zoteroRefresh: Promise<void> | null = null;
+  private zoteroBridges = new Set<Bridge>();
+  private zoteroMutations: Promise<void> = Promise.resolve();
+  private settingsWrite: Promise<void> = Promise.resolve();
+
+  private persistSettings(update: () => LitradarSettings): Promise<void> {
+    const write = this.settingsWrite.catch(() => {}).then(async () => {
+      const next = update();
+      await this.saveData(next);
+      this.settings = next;
+    });
+    this.settingsWrite = write;
+    return write;
+  }
+
+  private async auxiliaryProbe(args: string[], timeout: number) {
+    const bridge = new Bridge({ pythonPath: this.settings.pythonPath, vaultRoot: this.resolvedVaultRoot });
+    this.zoteroBridges.add(bridge);
+    try { return await bridge.probeJson(args, timeout); }
+    finally { this.zoteroBridges.delete(bridge); }
+  }
+
+  private async zoteroCommand(args: string[], timeout = 20000): Promise<unknown> {
+    const bridge = new Bridge({ pythonPath: this.settings.pythonPath, vaultRoot: this.resolvedVaultRoot });
+    this.zoteroBridges.add(bridge);
+    try {
+      const result = await bridge.probeJson(["zotero", "reading", ...args, "--json"], timeout);
+      if (result.code !== 0 || !result.json) throw new Error(tailLines(result.stderr || result.stdout, 3) || "Zotero 没有返回结果");
+      return result.json;
+    } finally { this.zoteroBridges.delete(bridge); }
+  }
+
+  refreshZoteroReading(force = false): Promise<void> {
+    if (this.zoteroRefresh) return force
+      ? this.zoteroRefresh.then(() => this.refreshZoteroReading(true))
+      : this.zoteroRefresh;
+    if (!force && Date.now() - this.zoteroLoadedAt < 30000) return Promise.resolve();
+    this.zoteroRefresh = (async () => {
+      try {
+        const result = await this.zoteroCommand(["--action", "list"]) as { items: ZoteroReadingEntry[]; statuses: ReadingListStatusOption[]; legacyCount: number };
+        if (!Array.isArray(result.items) || !Array.isArray(result.statuses)) throw new Error("请将 Zotero Bridge 更新到 0.2.0 并启用 Reading List");
+        this.zoteroStatuses = result.statuses;
+        this.zoteroLegacyCount = result.legacyCount || 0;
+        this.zoteroLibrary = result.items;
+        this.zoteroError = "";
+      } catch (error) {
+        this.zoteroError = error instanceof Error ? error.message : String(error);
+      } finally { this.zoteroLoadedAt = Date.now(); }
+    })().finally(() => { this.zoteroRefresh = null; });
+    return this.zoteroRefresh;
+  }
+
+  async setReadingStatus(article: Article, status: string, collectionDate?: string): Promise<void> {
+    const operation = this.zoteroMutations.catch(() => {}).then(async () => {
+      await this.zoteroCommand(["--action", "status", "--article-json", JSON.stringify(article),
+        "--status", status, "--collection", this.settings.zoteroTargetCollection,
+        ...(collectionDate && /^\d{4}-\d{2}-\d{2}$/.test(collectionDate) ? ["--collection-date", collectionDate] : [])], 240000);
+      await this.refreshZoteroReading(true);
+      this.refreshViews(false);
+    });
+    this.zoteroMutations = operation;
+    return operation;
+  }
+
+  async zoteroArticleAction(article: Article, action: "save" | "download" | "open" | "pdf", collectionDate?: string): Promise<void> {
+    const operation = this.zoteroMutations.catch(() => {}).then(async () => {
+      const key = article.doi || article.id;
+      this.articleStates.set(key, {phase: action === "download" ? "正在由 Zotero 下载 PDF…" : "正在操作 Zotero…"});
+      this.refreshViews(false);
+      try {
+        await this.performZoteroArticleAction(article, action, collectionDate);
+        await this.inspectZoteroArticle(article);
+        if (action === "download" && !this.articleStates.get(key)?.entry?.pdfs?.length) {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            await new Promise(resolve => window.setTimeout(resolve, 1500));
+            await this.inspectZoteroArticle(article);
+            if (this.articleStates.get(key)?.entry?.pdfs?.length) break;
+          }
+          if (!this.articleStates.get(key)?.entry?.pdfs?.length) {
+            this.articleStates.set(key, {...this.articleStates.get(key), phase: "尚未发现 PDF；Zotero 可能仍在下载或未找到可用全文，请刷新检查"});
+          }
+        }
+      } catch (error) {
+        this.articleStates.set(key, {phase: "操作失败", error: String(error)});
+        throw error;
+      } finally { this.refreshViews(false); }
+    });
+    this.zoteroMutations = operation;
+    return operation;
+  }
+
+  private async performZoteroArticleAction(article: Article, action: "save" | "download" | "open" | "pdf", collectionDate?: string): Promise<void> {
+    const command = action === "open" || action === "pdf" ? "lookup" : action;
+    const result = await this.zoteroCommand(["--action", command, "--article-json", JSON.stringify(article),
+      "--collection", this.settings.zoteroTargetCollection,
+      ...(collectionDate && /^\d{4}-\d{2}-\d{2}$/.test(collectionDate) ? ["--collection-date", collectionDate] : [])], 240000) as ZoteroReadingEntry & { message?: string };
+    if (action === "open" || action === "pdf") {
+      if (!result.key) throw new Error("文献尚未入库，请先保存到 Zotero");
+      if (action === "pdf" && !result.pdfs?.length) throw new Error("Zotero 中还没有 PDF 附件，请先下载 PDF");
+      const url = action === "pdf" ? result.pdfs[0].url : result.selectUrl;
+      if (!/^zotero:\/\/(select|open-pdf)\/library\/items\/[A-Z0-9]{8}$/.test(url)) throw new Error("Zotero 链接无效");
+      await require("electron").shell.openExternal(url);
+    } else {
+      new Notice(action === "save" ? "已保存到 Zotero 收藏夹（已有条目复用并保留原归属）" : result.message || "已交由 Zotero 查找和下载 PDF");
+      await this.refreshZoteroReading(true);
+      this.refreshViews(false);
+    }
+  }
+
+  articleStates = new Map<string, {phase: string; entry?: ZoteroReadingEntry; error?: string}>();
+
+  async inspectZoteroArticle(article: Article): Promise<void> {
+    const key = article.doi || article.id;
+    this.articleStates.set(key, {phase: "正在检查 Zotero…"});
+    this.refreshViews(false);
+    try {
+      const entry = await this.zoteroCommand(["--action", "lookup", "--article-json", JSON.stringify(article)]) as ZoteroReadingEntry;
+      this.articleStates.set(key, {phase: entry.key ? (entry.pdfs?.length ? "已入库 · 有 PDF 附件" : "已入库 · 尚无 PDF") : "尚未入库", entry});
+    } catch (error) {
+      this.articleStates.set(key, {phase: "检查失败", error: String(error)});
+    }
+    this.refreshViews(false);
+  }
+
+  async saveRecommendationFeedback(article: Article, value: string): Promise<void> {
+    const result = await this.auxiliaryProbe(["feedback", "--article-json", JSON.stringify(article), "--value", value, "--json"], 20000);
+    if (result.code !== 0) throw new Error(result.stderr || "反馈保存失败");
+    this.refreshViews(true);
+    new Notice(value === "clear" ? "已撤销反馈" : "已调整面板推荐；日报重生成时同步，文献仍完整保留");
+  }
+
+  private migrationStatus(status: ReadingStatus): string {
+    const target = status === "todo" ? this.settings.readingListTodoStatus : this.settings.readingListReadStatus;
+    if (!this.zoteroStatuses.some(option => option.value === target)) throw new Error("请先选择旧待读、已读记录对应的 Reading List 状态");
+    return target;
+  }
+
+  async migrateReadingLibrary(): Promise<void> {
+    await this.settingsWrite;
+    await this.refreshZoteroReading(true);
+    if (this.zoteroError) throw new Error(this.zoteroError);
+    for (const [key, entry] of Object.entries(this.settings.readingLibrary)) {
+      const existing = findReadingEntry(this.zoteroLibrary, entry.article);
+      if (!existing?.status) await this.setReadingStatus(entry.article, this.migrationStatus(entry.status));
+      await this.persistSettings(() => {
+        const library = { ...this.settings.readingLibrary };
+        delete library[key];
+        return { ...this.settings, readingLibrary: library };
+      });
+    }
+    this.refreshViews(false);
+  }
+
+  async migrateZoteroTags(): Promise<{ migrated: number; preserved: number; failed: unknown[] }> {
+    await this.settingsWrite;
+    const result = await this.zoteroCommand(["--action", "migrate", "--todo-status", this.migrationStatus("todo"),
+      "--read-status", this.migrationStatus("read")], 240000) as { migrated: number; preserved: number; failed: unknown[] };
+    await this.refreshZoteroReading(true);
+    this.refreshViews(false);
+    return result;
   }
 
   async updateSettings(patch: Partial<LitradarSettings>): Promise<void> {
     const previous = this.settings;
-    this.settings = { ...previous, ...patch };
-    await this.saveData(this.settings);
+    await this.persistSettings(() => ({ ...this.settings, ...patch }));
 
     if (previous.storeDir !== this.settings.storeDir) {
       this.reader = new LitradarStore(this.app, this.settings.storeDir);
@@ -208,6 +407,11 @@ export default class LitradarPlugin extends Plugin {
       this.refreshViews(true);
     }
     if (previous.showLogTail !== this.settings.showLogTail) {
+      this.refreshViews(false);
+    }
+    if (previous.autoRunEnabled !== this.settings.autoRunEnabled) {
+      this.stopAutoRun();
+      if (this.settings.autoRunEnabled) this.startAutoRun();
       this.refreshViews(false);
     }
     if (previous.autoRefreshSeconds !== this.settings.autoRefreshSeconds) {
@@ -249,6 +453,60 @@ export default class LitradarPlugin extends Plugin {
     }
   }
 
+  /** Obsidian-side scheduler: runs once a day after schedule.time while Obsidian is open. */
+  private startAutoRun(): void {
+    if (!this.settings.autoRunEnabled || this.autoTimer !== null) return;
+    this.autoStartTimer = window.setTimeout(() => {
+      this.autoStartTimer = null;
+      void this.maybeAutoRun();
+    }, 15_000);
+    this.autoTimer = window.setInterval(() => void this.maybeAutoRun(), 60_000);
+  }
+
+  private stopAutoRun(): void {
+    if (this.autoTimer !== null) window.clearInterval(this.autoTimer);
+    if (this.autoStartTimer !== null) window.clearTimeout(this.autoStartTimer);
+    this.autoTimer = this.autoStartTimer = null;
+  }
+
+  private async maybeAutoRun(): Promise<void> {
+    if (!this.settings.autoRunEnabled || this.autoTimer === null || this.job || this.engineBlocker()) return;
+    const today = this.today();
+    if (this.autoRunDay === today) return;
+
+    const runIds = await this.reader.listRunIds();
+    const latestId = runIds.length > 0 ? runIds[runIds.length - 1] : null;
+    const store = latestId ? await this.reader.readStore(latestId) : null;
+    const fetchedToday = typeof store?.scan_at === "string" && store.scan_at.slice(0, 10) === today;
+
+    if (fetchedToday) {
+      const report = latestId
+        ? await this.reader.findReport(latestId, store?.window?.end)
+        : null;
+      if (report) {
+        this.autoRunDay = today;
+        if (this.settings.autoBackfillEnabled) await this.runAction("maintain");
+        return;
+      }
+      this.autoRunDay = today;
+      new Notice("Litradar：今日已抓取但日报缺失，自动生成…", 4000);
+      await this.runAction("render");
+      return;
+    }
+
+    const schedule = await this.reader.readSchedule(today, store);
+    const match = /^(\d{1,2}):(\d{2})/.exec(schedule.time.trim());
+    if (!match) return;
+    const target = Number(match[1]) * 60 + Number(match[2]);
+    const now = new Date();
+    if (now.getHours() * 60 + now.getMinutes() < target) return;
+
+    this.autoRunDay = today;
+    new Notice(`Litradar：已到计划时间 ${schedule.time}，开始自动抓取…`, 4000);
+    if (this.settings.autoBackfillEnabled) await this.runAction("maintain");
+    if (this.settings.autoRunEnabled && !this.job && this.lastOutcome?.kind !== "cancelled") await this.runAction("run");
+  }
+
   /** Non-null exactly when engine actions must be disabled. */
   engineBlocker(): string | null {
     if (this.engine.state === "ok") return null;
@@ -264,6 +522,65 @@ export default class LitradarPlugin extends Plugin {
       return "正在检测引擎…";
     }
     return `无法检测引擎：${this.engine.detail ?? "未知错误"}`;
+  }
+
+  /** Effective engine config (api_key redacted by the engine) for the settings UI. */
+  async engineConfig(): Promise<Record<string, unknown> | null> {
+    if (!this.bridge) return null;
+    try {
+      const result = await this.auxiliaryProbe(["config", "list", "--json"], 8000);
+      return (result.json ?? null) as Record<string, unknown> | null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Zotero collections for the profile builder, with a readable failure reason. */
+  async engineCollections(): Promise<{
+    collections: ZoteroCollection[] | null;
+    error: string;
+  }> {
+    if (!this.bridge) return { collections: null, error: "引擎桥未初始化" };
+    try {
+      const result = await this.auxiliaryProbe(["zotero", "collections", "--json"], 20000);
+      if (Array.isArray(result.json)) {
+        return { collections: result.json as ZoteroCollection[], error: "" };
+      }
+      return { collections: null, error: tailLines(result.stderr || result.stdout, 3) || `退出码 ${result.code ?? "null"}` };
+    } catch (error) {
+      return { collections: null, error: String(error) };
+    }
+  }
+
+  /** Build a profile from the checked collections (LLM, falls back to keywords). */
+  async engineProfile(collections: string[], name: string): Promise<{ ok: boolean; error: string }> {
+    if (!this.bridge) return { ok: false, error: "引擎桥未初始化" };
+    const args = ["zotero", "profile"];
+    if (collections.length > 0) args.push("--collections", collections.join(","));
+    args.push("--llm", "--write");
+    if (name.trim()) args.push("--name", name.trim());
+    try {
+      const result = await this.bridge.probeJson(args, 180000);
+      return {
+        ok: result.code === 0,
+        error: result.code === 0 ? "" : tailLines(result.stderr || result.stdout, 3),
+      };
+    } catch (error) {
+      return { ok: false, error: String(error) };
+    }
+  }
+
+  /** Persist one setting through the engine (writes .litradar/config.local.yaml). */
+  async engineConfigSet(key: string, value: string): Promise<boolean> {
+    if (!this.bridge) return false;
+    try {
+      const result = await this.bridge.probeJson(["config", "set", key, value], 8000);
+      if (result.code !== 0) return false;
+      if (key.startsWith("schedule.")) this.refreshViews(true);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private makeBridge(): void {
@@ -450,7 +767,7 @@ export default class LitradarPlugin extends Plugin {
     return { runId, store };
   }
 
-  async runAction(action: ActionKind): Promise<void> {
+  async runAction(action: ActionKind, options?: {runId?: string; journal?: string}): Promise<void> {
     if (this.job) {
       new Notice("任务进行中，请稍候");
       return;
@@ -464,16 +781,28 @@ export default class LitradarPlugin extends Plugin {
     const runIds = await this.reader.listRunIds();
     let runId = runIds.length > 0 ? runIds[runIds.length - 1] : null;
     let store: StorePayload | null = null;
+    if (options?.runId) runId = options.runId;
     if (runId) store = await this.reader.readStore(runId);
 
     let args: string[];
-    if (action === "fetch") {
+    if (action === "run") {
+      // Full pipeline: fetch + LLM render. The engine owns the date window.
+      args = ["run", "--llm"];
+    } else if (action === "repair") {
+      if (!runId) { new Notice("没有可重试的批次"); return; }
+      args = ["repair", "--run-id", runId, "--no-llm"];
+      if (options?.journal) args.push("--journal", options.journal);
+    } else if (action === "maintain") {
+      args = ["maintain", "--days", String(Math.max(1,Math.min(7,this.settings.backfillDays || 3))), "--no-llm"];
+    } else if (action === "schedule") {
+      args = ["schedule", "install", "--apply"];
+    } else if (action === "fetch") {
       // The engine owns the date window (config `schedule.window`); the plugin
       // must not compute one.
       args = ["fetch"];
     } else if (action === "render" || action === "embed") {
       if (!runId || !store) {
-        new Notice("今日尚未抓取：先运行「重抓」或 `litradar fetch`", 6000);
+        new Notice("今日尚未抓取：先运行「抓取并生成」", 6000);
         return;
       }
       args = [action];
@@ -495,7 +824,12 @@ export default class LitradarPlugin extends Plugin {
       action,
       startedAt: Date.now(),
       runId: runId ?? undefined,
-      phase: action === "fetch" ? "启动引擎…" : "读取 store…",
+      phase:
+        action === "fetch" || action === "run"
+          ? "启动引擎…"
+          : action === "schedule"
+            ? "写入 LaunchAgent…"
+            : "读取 store…",
       scans: {},
       cancelRequested: false,
       stderrTail: "",
@@ -806,7 +1140,7 @@ export default class LitradarPlugin extends Plugin {
     const store = await this.reader.readStore(runId);
     const preferred =
       preferredPath ??
-      (this.lastOutcome?.action !== "doctor" ? this.lastOutcome?.reportPath : undefined);
+      (!runIdArg && this.lastOutcome?.action !== "doctor" ? this.lastOutcome?.reportPath : undefined);
     const path = await this.reader.findReport(runId, store?.window?.end, preferred);
     if (!path) {
       new Notice(`尚未生成日报：${runId}（先运行「重生成」）`, 6000);

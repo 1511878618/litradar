@@ -20,7 +20,7 @@ export const EXIT = {
 
 export const SCHEMA_VERSION = 2;
 
-export type ScanStatus = "ok" | "metadata-only" | "blocked" | "timeout" | "error";
+export type ScanStatus = "ok" | "metadata-only" | "off-cycle" | "blocked" | "timeout" | "error";
 export type DateSource = "publisher" | "crossref" | "manual" | "missing";
 export type Visibility = "publisher" | "metadata-only";
 
@@ -36,6 +36,9 @@ export interface WindowInfo {
 export interface Article {
   id: string;
   title: string;
+  title_zh?: string;
+  summary_zh?: string;
+  why_zh?: string;
   journal: string;
   url: string;
   surface?: string | null;
@@ -46,6 +49,8 @@ export interface Article {
   abstract_source?: string | null;
   authors?: string[];
   content_type?: string;
+  /** Publisher-declared category (Research Article, Perspective, Letter…). */
+  article_type?: string | null;
   first_seen_at?: string | null;
   /** Only present in store items: already reported in an earlier digest. */
   already_seen?: boolean;
@@ -63,6 +68,25 @@ export interface JournalScan {
   reason?: string | null;
   scanned_at?: string | null;
   visibility?: Visibility | string;
+  /** Publication rhythm, from journals/<slug>.yaml. */
+  cadence?: "daily" | "weekly" | string;
+  weekday?: number | null;
+  /** Current issue (best-effort: RSS channel metadata or Crossref). */
+  volume?: string | null;
+  issue?: string | null;
+  issue_identifier?: string | null;
+  cover_date?: string | null;
+}
+
+/** Schedule + freshness card shown above the journal table. */
+export interface ScheduleInfo {
+  kind: string;
+  time: string;
+  tz: string;
+  installed: boolean;
+  nextRunAt: string | null;
+  lastScanAt: string | null;
+  todayFetched: boolean;
 }
 
 export interface StorePayload {
@@ -172,7 +196,7 @@ export interface ReportMeta {
   hasValidation: boolean;
 }
 
-export type ActionKind = "fetch" | "render" | "embed" | "doctor";
+export type ActionKind = "run" | "fetch" | "render" | "embed" | "doctor" | "schedule" | "repair" | "maintain";
 
 export type OutcomeKind =
   | "ok"
@@ -244,10 +268,22 @@ export interface LitradarSettings {
   apiKeyEnv: string;
   /** Panel polling interval in seconds; 0 = off. */
   autoRefreshSeconds: number;
+  /** Run the daily job while Obsidian is open. */
+  autoRunEnabled: boolean;
+  autoBackfillEnabled: boolean;
+  backfillDays: number;
   /** Show the last 20 stderr lines in the panel. */
   showLogTail: boolean;
   /** Minimum engine version accepted by this plugin. */
   minEngine: string;
+  /** Zotero collections checked in the profile builder. */
+  profileCollections: string[];
+  /** Name used for the generated profile file. */
+  profileName: string;
+  readingLibrary: import("./reading").ReadingLibrary;
+  zoteroTargetCollection: string;
+  readingListTodoStatus: string;
+  readingListReadStatus: string;
 }
 
 export const DEFAULT_SETTINGS: LitradarSettings = {
@@ -256,9 +292,34 @@ export const DEFAULT_SETTINGS: LitradarSettings = {
   storeDir: ".litradar",
   apiKeyEnv: "LITRADAR_API_KEY",
   autoRefreshSeconds: 30,
+  autoRunEnabled: true,
+  autoBackfillEnabled: true,
+  backfillDays: 3,
   showLogTail: true,
   minEngine: "2.0.0",
+  profileCollections: [],
+  profileName: "",
+  readingLibrary: {},
+  zoteroTargetCollection: "",
+  readingListTodoStatus: "To Read",
+  readingListReadStatus: "Read",
 };
+
+/** Current research profile (Zotero-generated when available). */
+export interface ProfileInfo {
+  direction: string;
+  keywords: string[];
+  sources: string[];
+  model: string;
+  updatedAt: string | null;
+  fromZotero: boolean;
+}
+
+/** Effective LLM endpoint (config.local.yaml overrides config.yaml). */
+export interface LlmInfo {
+  model: string;
+  baseUrl: string;
+}
 
 /** Snapshot of one `.litradar` read. Never written back. */
 export interface PanelData {
@@ -275,6 +336,9 @@ export interface PanelData {
   runLogTail: string | null;
   today: string;
   fetchedToday: boolean;
+  schedule: ScheduleInfo;
+  profile: ProfileInfo;
+  llm: LlmInfo;
   warnings: string[];
   error?: string;
 }
