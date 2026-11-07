@@ -169,7 +169,22 @@ def fetch(journal, fetcher, window):
 **不要**因为抓不到就把它从配置里删掉：留在配置里、状态标 `blocked`，
 比"看起来一切正常但没有文章"诚实得多。
 
-## 8. 排序与标题层级（可选）
+## 8. 更新节奏（可选）
+
+日报每天都跑，但不是每本刊每天都更新。给周更刊物标上节奏，非出版日就会显示
+「🛌 非出版日（周三更新）」，而不是让人误以为「今天没有新文章」。
+
+```yaml
+cadence: weekly      # daily（默认）| weekly
+weekday: wed         # weekly 必填：mon..sun、0..6 或 周三
+```
+
+- 只有「本窗户口不包含更新星期」且「抓到 0 篇」才会变成 `off-cycle`；
+- 窗口**包含**更新星期却 0 篇时仍是 `ok`，但 `reason` 会写「周三更新，本轮 0 篇」，提醒你去核对；
+- 库里 Science（周四）、Science Advances（周五）已经这样配置；Nature 系在线上是连续出版，保持 `daily`；
+- 月刊/双周刊暂不支持：它们的「月内第几周」无法用星期表达，保持 `daily` 即可，0 篇不会被误报为失败。
+
+## 9. 排序与标题层级（可选）
 
 ```yaml
 impact_factor: 15.7      # 只用于排序与覆盖表展示；不写按 0 处理
@@ -185,7 +200,7 @@ date_filter: created     # 仅 crossref：Elsevier 只有年月时用收录日
   它们仍会出现在「非研究类型」审计段；
 - 完整字段模板见 [`examples/journals/_template.yaml`](../examples/journals/_template.yaml)。
 
-## 9. 配图字段（可选）
+## 10. 配图字段（可选）
 
 只影响置顶文章的配图，取图顺序：`image_selector` → 正文第一张图 → `og:image` →
 `cover_url`。
@@ -204,7 +219,7 @@ image_page: ".full"          # 预印本要正文页才有图（摘要页只有�
 - **bioRxiv / medRxiv 的 `.full` 页面目前对自动请求返回 403/429**，所以预印本配图
   经常拿不到；期刊文章不受影响。拿不到就跳过，不会影响日报。
 
-## 10. 验收清单
+## 11. 验收清单
 
 - [ ] `litradar journals test "<刊名>"` 有 title / date / doi
 - [ ] `litradar doctor` 该刊不是 ❌

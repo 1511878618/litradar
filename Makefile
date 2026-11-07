@@ -1,7 +1,7 @@
 .PHONY: help install test lint plugin clean
 
 help:
-	@echo "install  - editable install with dev extras"
+	@echo "install  - editable install with dev extras (run inside conda base)"
 	@echo "test     - run the dependency-free test suite"
 	@echo "lint     - ruff check src tests"
 	@echo "plugin   - build the Obsidian plugin"

@@ -24,3 +24,13 @@ obsidian-litradar/*.js.map
 # OS
 .DS_Store
 Thumbs.db
+
+# Superseded local Zotero build artifacts
+zotero-litradar/litradar-pdf-bridge-0.1.*.xpi
+
+# Private vault configuration and release staging
+.litradar/
+.env
+.env.*
+!.env.example
+release-assets/

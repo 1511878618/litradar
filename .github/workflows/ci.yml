@@ -65,9 +65,18 @@ jobs:
         with:
           version: 9
       - name: Install
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
       - name: Build (tsc --noEmit + esbuild)
         run: pnpm run build
+      - name: Frontend regression tests
+        run: |
+          node tests/auto-schedule.cjs
+          node tests/reading-workflow.cjs
+          node tests/view-state.cjs
+          node tests/library-upgrade.cjs
+          node tests/zotero-pdf-bridge.cjs
+      - name: Build Zotero bridge
+        run: python ../zotero-litradar/build.py
       - name: Artifact
         uses: actions/upload-artifact@v4
         with:

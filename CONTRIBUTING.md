@@ -8,9 +8,10 @@
 
 ## 开发环境
 
+开发装进 **conda 的 base 环境**，不要在仓库里建 `.venv`：
+
 ```bash
-python -m venv .venv
-. .venv/bin/activate            # Windows: .venv\Scripts\activate
+conda activate base
 pip install -e ".[dev]"
 ```
 

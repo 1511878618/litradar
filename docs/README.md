@@ -2,9 +2,11 @@
 
 | 文件 | 内容 |
 |---|---|
+| [zotero-setup.md](zotero-setup.md) | Zotero 联动安装：Reading List、PDF Bridge、授权、子文件夹及双向状态同步与旧记录迁移 |
+| [reading-workflow.md](reading-workflow.md) | 重试、补抓、跨批次文献库、推荐反馈和版本关联 |
 | [design/](design/) | 原始设计规格（架构、CLI、数据契约、报告骨架、插件、集成、里程碑） |
 | [journals.md](journals.md) | 新增期刊 SOP：选适配器、调选择器、处理 403 |
-| [journals-catalog.md](journals-catalog.md) | 默认 17 本刊、影响因子、标题层级、排序规则 |
+| [journals-catalog.md](journals-catalog.md) | 默认 21 本刊、影响因子、标题层级、排序规则 |
 | [../README.md](../README.md) | 使用说明（中文） |
 | [../README.en.md](../README.en.md) | Usage (English) |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | 贡献指南 |

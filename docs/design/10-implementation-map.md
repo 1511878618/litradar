@@ -16,6 +16,9 @@
 | 影响因子排序 / 标题层级（规格之外的新增） | `render.py`、`config.py` | `test_render.py`、`test_config.py` |
 | 期刊 / 预印本分节（规格之外） | `render.py`、`pipeline.py` | `test_pipeline.py`、`test_cli.py` |
 | 标签、主题图、词云（规格之外） | `tags.py`、`wordcloud.py`、`render.py` | `test_tags.py`、`test_wordcloud.py` |
+| 中文精读（规格之外） | `deepread.py`、`pipeline.py`、`render.py` | `test_deepread.py` |
+| 期刊更新节奏 `cadence`（规格之外） | `config.py`、`pipeline.py::_apply_cadence`、`model.py`（`off-cycle`） | `test_config.py`、`test_pipeline.py`、`test_window.py` |
+| 周报与本周热点（规格之外） | `hotspots.py`、`pipeline.py::assemble_weekly`、`render.py`、`cli.py::cmd_weekly` | `test_hotspots.py`、`test_cli.py` |
 | [05 报告骨架](05-report.md) | `render.py` | `test_render.py`（front-matter、全量、审计段） |
 | [06 插件](06-plugin.md) | `obsidian-litradar/src/*` | CI `plugin` job（`tsc --noEmit` + esbuild） |
 | [07 定时](07-integrations.md) | `schedule.py` | `test_schedule.py` |

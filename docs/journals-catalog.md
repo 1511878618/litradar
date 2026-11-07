@@ -1,4 +1,4 @@
-# 期刊目录（init 默认带的 17 本）
+# 期刊目录（init 默认带的 21 本）
 
 `litradar init` 会把下面这些期刊写进 `.litradar/journals/`。**影响因子只是排序与展示用的示例值**
 （JCR 2024 量级，四舍五入），不是权威数据，也不影响抓取；请按自己学校/单位的口径改 YAML 里的
@@ -6,8 +6,12 @@
 
 | 期刊 | 适配器 | 数据源 | 影响因子（示例） | 标题等级 | 备注 |
 |---|---|---|---|---|---|
-| Nature | rss | `nature.com/nature.rss` | 48.5 | 3 | 用 DOI 前缀排除新闻/评论 |
-| Science | rss | `science.org` ETOC RSS | 44.7 | 3 | `dc:type` 区分研究/新闻 |
+| Nature | rss | `nature.com/nature.rss` | 48.5 | 3 | 用 DOI 前缀排除新闻/评论；周更（周四） |
+| Cell | rss | `cell.com/cell/current.rss` | 45.5 | 3 | 隔周周四出刊；部分客户端 TLS 被拦，自动降级 Crossref 仅元数据 |
+| Nature Sustainability | rss | `nature.com/natsustain.rss` | 25.7 | 3 | 月刊，在线优先，按日抓取 |
+| Nature Climate Change | rss | `nature.com/nclimate.rss` | 29.6 | 3 | 月刊，在线优先，按日抓取 |
+| Nature Computational Science | rss | `nature.com/natcomputsci.rss` | 12.0 | 4 | 月刊，在线优先，按日抓取 |
+| Science | rss | `science.org` ETOC RSS | 44.7 | 3 | `dc:type` 区分研究/新闻；周更（周四）；403 时 Crossref 发表日期元数据兜底 |
 | Nature Methods | rss | `nature.com/nmeth.rss` | 32.1 | 3 | |
 | Nature Genetics | rss | `nature.com/ng.rss` | 30.8 | 3 | |
 | Nature Biotechnology | rss | `nature.com/nbt.rss` | 29.0 | 3 | |
@@ -16,13 +20,16 @@
 | Nature Machine Intelligence | rss | `nature.com/natmachintell.rss` | 18.9 | 4 | |
 | Nature Communications | rss | `nature.com/ncomms.rss` | 15.7 | 4 | |
 | npj Digital Medicine | rss | `nature.com/npjdigitalmed.rss` | 15.1 | 4 | |
-| Science Advances | rss | `science.org` ETOC RSS | 12.5 | 4 | |
+| Science Advances | rss | `science.org` ETOC RSS | 12.5 | 4 | 周更（周五）；403 时 Crossref 发表日期元数据兜底 |
 | JAMIA | crossref | ISSN `1067-5027` | 6.0 | 5 | OUP 页面 403，走 Crossref |
 | Molecular Biology and Evolution | crossref | ISSN `0737-4038` | 5.3 | 5 | 仅元数据 |
 | Journal of Biomedical Informatics | crossref | ISSN `1532-0464` | 4.5 | 5 | Elsevier `created` 日期 |
 | PLOS Genetics | rss | PLOS Atom | 4.0 | 5 | |
 | bioRxiv | biorxiv | 官方 JSON API | — | 5 | 预印本，永远排最后 |
 | medRxiv | biorxiv | 官方 JSON API | — | 5 | 预印本，永远排最后 |
+
+> 「周更（周四）」等节奏写在 YAML 的 `cadence: weekly` + `weekday`；非出版日会显示
+> 「🛌 非出版日」，不会冒充「没有新文章」。其余刊物按日抓取。
 
 ## 排序规则
 

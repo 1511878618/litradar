@@ -9,7 +9,8 @@
 | `init` | 在 vault 建 `.litradar/` 骨架 | `--vault PATH`（必填） |
 | `fetch` | 抓取 + 日期窗 + 去重 → `store/<date>.json` | `--date / --window / --journal / --ref / --no-cache / --jsonl` |
 | `render` | 读 store → [LLM] → 校验 → 日报 + 索引 | `--date / --llm / --no-llm / --jsonl / --kind` |
-| `run` | `fetch` + `render` | 两者并集 |
+| `run` | `fetch` + `render` | 两者并集；配置日追加周报 |
+| `weekly` | 合并本周日报 → 周报（含热点） | 不抓取，只读 `store/<date>.json` |
 | `embed` | 算相关度 → `scores.json` | `--date / --profile / --top / --jsonl` |
 | `screen` | 校验外部写入的 `screen.json`（默认不落盘） | `--file / --apply / --strict` |
 | `status` | 上次抓取、三态覆盖 | `--json` |

@@ -27,12 +27,12 @@
 
 > 无 DOI 时作者键必须用**全名**，只用姓会撞（"Ann Lee" 与 "Bob Lee" 都得 `lee`）。v1 踩过。
 
-## 2. JournalScan（覆盖记录，三态）
+## 2. JournalScan（覆盖记录，六态）
 
 | 字段 | 说明 |
 |---|---|
 | `journal` | 刊名 |
-| `status` | `ok` / `metadata-only` / `blocked` / `timeout` / `error` |
+| `status` | `ok` / `metadata-only` / `off-cycle` / `blocked` / `timeout` / `error` |
 | `surface` / `url` / `http` | 证据 |
 | `items_seen` | 本轮条目数（去重前） |
 | `reason` | 人话原因，直接进报告与前端 |
@@ -40,6 +40,8 @@
 | `visibility` | `publisher` / `metadata-only` |
 
 **语义铁律**：只有 `items_seen: 0` + `status: ok` 才能说"没有新文章"，其余组合都不行。
+
+`off-cycle` 只由 `journals/<slug>.yaml` 里的 `cadence: weekly` + `weekday` 产生：本轮窗口不包含该刊的更新星期，且确实 0 篇。它算「已确认」，不算失败，也不会让整体覆盖降级；报告里显示为「🛌 非出版日（周三更新）」。反过来，窗口**包含**更新星期却 0 篇时仍是 `ok`，但 `reason` 会写明「周三更新，本轮 0 篇」，提示用 `journals test` 核对采集。
 
 ## 3. `store/<date>.json`
 
@@ -77,6 +79,7 @@
     {"id": "sha1:9f2c...", "relevant": true, "relevance": 0.82,
      "why": "用群体基因组数据识别了正选择位点",
      "topic_tags": ["进化基因组学", "正选择"],
+     "keywords": ["positive selection", "gene family expansion"],
      "abstract_en": "…", "abstract_mode": "verbatim",
      "conclusion": "…", "conclusion_source": "https://www.nature.com/articles/…"}
   ]
@@ -84,6 +87,93 @@
 ```
 
 `abstract_mode`：`verbatim`（与 `abstract_raw` 相似度须 ≥ 0.90）/ `faithful-summary` / `none`。
+
+`keywords`：模型从标题/摘要里抽的 3–6 个原词（英语优先），用于和 `screening.keywords` 做
+确定性匹配；缺失时退回模型给出的 `relevance`。
+
+## 4.1 `runs/<date>/deepread.json`（精读产物）
+
+只覆盖置顶的几篇（`deepread.max_items`），由单独的模型调用生成；`screen.json` 存在时复用，不重复花钱。
+
+```json
+{
+  "schema": 2,
+  "model": "deepseek-flash",
+  "screening": "deepread-v1",
+  "papers": [
+    {"id": "sha1:9f2c...", "title_zh": "事件级基础模型推动粒子对撞数据分析…",
+     "field_zh": "高能物理与机器学习（粒子对撞数据分析）",
+     "digest_zh": "背景 → 做了什么 → 结论…", "keywords_zh": ["基础模型", "自监督学习"],
+     "warnings": []}
+  ]
+}
+```
+
+校验（违反时该篇退回英文版式，绝不编造）：
+
+| # | 规则 | 违反时 |
+|---|---|---|
+| 1 | `id` 必须在置顶候选内 | 拒收该条，写入「校验记录」 |
+| 2 | `title_zh` / `digest_zh` 非空 | 拒收该条 |
+| 3 | 超长字段 | 截断 + warning |
+| 4 | 解读里的数字必须出现在标题或摘要中 | 保留正文，但写 warning |
+| 5 | 关键词去重、截断到 6 个 | 自动修 |
+
+`warnings` 不会让条目消失：它们进「校验记录」，读者能看到模型越界的地方。
+
+## 4.2 `runs/<week>/hotspots.json`（周报热点）
+
+只在周报里生成。每条热点必须引用至少 2 篇**本周候选**里的论文，否则整条丢弃（这就是「允许写趋势」的代价）。
+
+```json
+{
+  "schema": 2,
+  "model": "deepseek-flash",
+  "screening": "hotspots-v1",
+  "hotspots": [
+    {"title": "本周方向：正选择", "body": "……（60–200 字）",
+     "evidence": ["sha1:9f2c...", "sha1:0d7b..."], "warnings": []}
+  ]
+}
+```
+
+| # | 规则 | 违反时 |
+|---|---|---|
+| 1 | `title` / `body` 非空 | 拒收该条 |
+| 2 | `evidence` ≥ 2 且全部命中本周候选 | 拒收该条；不存在的 id 记 note |
+| 3 | `body` 超长 / 偏短 | 截断 / 记 note |
+| 4 | 超过 5 条 | 截断并记 note |
+
+## 4.3 周报的 store
+
+周报不重新抓取：`assemble_weekly` 把本周每天的 `store/<date>.json` 合并成 `store/<week>.json`，额外带两个字段：
+
+- `assembled_from: "daily"`；
+- `missing_days: ["2026-11-04", ...]`——没开机、没跑日报的日子，周报页头会列出来，不假装覆盖。
+
+## 4.4 设置覆盖文件
+
+`.litradar/config.local.yaml` 与 `.litradar/profile.yaml` 都是覆盖层，加载顺序
+（后者覆盖前者）：
+
+```
+DEFAULTS → config.yaml → config.local.yaml → profile.yaml
+```
+
+- `config.local.yaml`：`litradar config set` 写入，给 Obsidian 设置页用，**不改 config.yaml 的注释**；
+- `profile.yaml`：`litradar zotero profile --write` 写入，只放 `direction` 与 `keywords`。
+
+## 4.5 `runs/<date>/usage.json`（模型用量）
+
+```json
+{"calls": 3, "prompt_tokens": 17398, "completion_tokens": 6801,
+ "estimated": false, "model": "deepseek-flash", "cost_cny": 0.0892,
+ "recorded_at": "2026-11-02T21:35:03+08:00"}
+```
+
+- token 数取自接口返回的 `usage`；接口没给时按字符估算并置 `estimated: true`；
+- `cost_cny` 按 `llm.pricing.input_per_million / output_per_million` 估算，只用于参考，不是账单；
+- 重渲染会复用已有 `usage.json` 显示，不会重新计费。
 
 ## 5. screen.json 校验规则（违反时降级，不报错）
 

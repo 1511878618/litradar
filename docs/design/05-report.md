@@ -1,5 +1,14 @@
 # 05 · 报告格式
 
+> 可选两文件模式（`output.split_preprints: true`）：期刊与预印本各写一份，
+> 文件名分别是 `<date>.md` 与 `<date>-preprint.md`，各自只含本类的置顶/正文/覆盖表，
+> 页头用 `[[...]]` 互链，索引写两行。
+>
+> 周报（`kind: weekly`）用同一套骨架，差异只有：
+> `## 本周主题分布` / `## 本周期刊（N 篇）` / `## 本周预印本（N 篇）`，
+> 置顶段后多一节 `## 本周热点`（每条带 `> 依据：…` 回指论文），
+> 文件名是 `2026-W45.md`。
+
 ## 1. 骨架（顺序固定，前端据此解析）
 
 ```markdown
@@ -12,6 +21,7 @@ journals: [Nature Genetics, PLOS Genetics, Molecular Biology and Evolution]
 window: 2026-10-29
 coverage: partial
 screening: llm-v1（deepseek-chat）
+deepread: deepread-v1（deepseek-chat）
 new_items: 9
 highlights: 2
 ---
@@ -28,6 +38,10 @@ highlights: 2
 ## 与你最相关（2 篇）
 
 ### 1. 精确标题
+
+> 有精读（`deepread.json`）时，标题换成中文标题，并多出「研究领域 / 关键词 / 原文标题」，
+> 解读以段落形式放在标题下；下面这段 bullet 骨架是**没有精读**时的版式，两者都保留
+> 「英文摘要」用于逐字核对。
 - 期刊：Nature Genetics
 - 出版商状态：Latest Research
 - 官网首次在线日期：2026-10-28
