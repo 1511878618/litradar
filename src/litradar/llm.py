@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -20,6 +21,45 @@ from .util import redact
 
 class LlmError(Exception):
     """Any reason the model could not answer — always degradable, never fatal."""
+
+
+_CJK = re.compile(r"[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]")
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count: one per CJK char, four per other char (no tokenizer dep)."""
+    if not text:
+        return 0
+    cjk = len(_CJK.findall(text))
+    return int(cjk + (len(text) - cjk) / 4) + 1
+
+
+def new_usage() -> dict:
+    return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "estimated": False}
+
+
+def merge_usage(target: dict, source: dict | None) -> dict:
+    if not source:
+        return target
+    for key in ("calls", "prompt_tokens", "completion_tokens"):
+        target[key] = int(target.get(key, 0)) + int(source.get(key, 0))
+    if source.get("calls"):
+        target["estimated"] = bool(target.get("estimated") or source.get("estimated"))
+    return target
+
+
+def cost_cny(usage: dict, cfg: Any) -> float:
+    """Estimated CNY cost from ``llm.pricing`` (example prices by default)."""
+    try:
+        input_price = float(cfg.get("llm.pricing.input_per_million", 0) or 0)
+        output_price = float(cfg.get("llm.pricing.output_per_million", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(
+        int(usage.get("prompt_tokens", 0)) / 1_000_000 * input_price
+        + int(usage.get("completion_tokens", 0)) / 1_000_000 * output_price,
+        4,
+    )
 
 
 def _endpoint(base_url: str) -> str:
@@ -73,6 +113,7 @@ def chat_json(
     logger: Any = None,
     timeout: float | None = None,
     max_retries: int | None = None,
+    usage: dict | None = None,
 ) -> Any:
     """POST /chat/completions and return the parsed JSON object."""
     key = api_key(cfg)
@@ -140,6 +181,23 @@ def chat_json(
         raise LlmError("模型响应缺少 choices[0].message.content") from exc
     if not content:
         raise LlmError("模型返回了空内容")
+    if usage is not None:
+        raw = envelope.get("usage") or {} if isinstance(envelope, dict) else {}
+        prompt = raw.get("prompt_tokens") or raw.get("input_tokens")
+        completion = raw.get("completion_tokens") or raw.get("output_tokens")
+        usage["calls"] = int(usage.get("calls", 0)) + 1
+        if prompt is None:
+            usage["prompt_tokens"] = int(usage.get("prompt_tokens", 0)) + estimate_tokens(
+                "".join(str(message.get("content") or "") for message in messages)
+            )
+            usage["estimated"] = True
+        else:
+            usage["prompt_tokens"] = int(usage.get("prompt_tokens", 0)) + int(prompt)
+        if completion is None:
+            usage["completion_tokens"] = int(usage.get("completion_tokens", 0)) + estimate_tokens(content)
+            usage["estimated"] = True
+        else:
+            usage["completion_tokens"] = int(usage.get("completion_tokens", 0)) + int(completion)
     try:
         return json.loads(content)
     except json.JSONDecodeError:

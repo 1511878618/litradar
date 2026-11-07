@@ -115,6 +115,8 @@ class Paths:
             template = self.cfg.get("output.report_dir", template) or template
             filename = self.cfg.get("output.filename", filename) or filename
             suffix = str(self.cfg.get("output.preprint_suffix", suffix) or suffix)
+        if window.kind in ("weekly", "week_to_date"):
+            filename = str(self.cfg.get("output.weekly_filename", "{week}") if self.cfg else "{week}") or "{week}"
         directory = expand_template(template, window)
         name = expand_template(filename, window)
         if kind == "preprint":

@@ -75,17 +75,27 @@ def test_cron_line():
 def test_print_commands_writes_wrapper():
     with temp_dir() as tmp:
         config = _config(tmp)
-        lines = schedule.print_commands(tmp, config)
-        assert lines
-        assert schedule.wrapper_path(tmp).exists()
+        original = schedule.wrapper_path
+        schedule.wrapper_path = lambda vault, platform=None: tmp / "run-daily.sh"
+        try:
+            lines = schedule.print_commands(tmp, config)
+            assert lines
+            assert schedule.wrapper_path(tmp).exists()
+        finally:
+            schedule.wrapper_path = original
 
 
 def test_uninstall_without_apply_is_dry_run():
     with temp_dir() as tmp:
         config = _config(tmp)
-        lines = schedule.uninstall(tmp, config, apply=False)
-        assert lines
-        assert schedule.wrapper_path(tmp).exists() is False
+        original = schedule.wrapper_path
+        schedule.wrapper_path = lambda vault, platform=None: tmp / "run-daily.sh"
+        try:
+            lines = schedule.uninstall(tmp, config, apply=False)
+            assert lines
+            assert schedule.wrapper_path(tmp).exists() is False
+        finally:
+            schedule.wrapper_path = original
 
 
 def test_schedule_time_fallback_on_bad_value():

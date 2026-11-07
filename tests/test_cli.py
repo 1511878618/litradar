@@ -80,7 +80,7 @@ def test_version_json():
     code, out = capture_stdout(lambda: main(["--version", "--json"]))
     assert code == 0
     payload = json.loads(out)
-    assert payload["engine"] == "2.0.0"
+    assert payload["engine"] == __import__("litradar").__version__
     assert payload["schema"] == 2
 
 
@@ -89,7 +89,7 @@ def test_init_creates_skeleton():
         code, out = capture_stdout(lambda: main(["init", "--vault", str(tmp)]))
         assert code == 0
         assert (tmp / ".litradar" / "config.yaml").exists()
-        assert len(list((tmp / ".litradar" / "journals").glob("*.yaml"))) == 17
+        assert len(list((tmp / ".litradar" / "journals").glob("*.yaml"))) == 21
 
 
 def test_journals_list_json():
@@ -98,7 +98,7 @@ def test_journals_list_json():
         code, out = capture_stdout(lambda: main(["journals", "list", "--vault", str(tmp), "--json"]))
         assert code == 0
         rows = json.loads(out)
-        assert len(rows) == 17
+        assert len(rows) == 21
         assert {row["adapter"] for row in rows} == {"rss", "crossref", "biorxiv"}
 
 
@@ -207,7 +207,7 @@ def test_unknown_window_flag_is_config_error():
         assert code == 2
 
 
-def test_weekly_report_uses_window_end_filename_and_index_link():
+def test_weekly_report_uses_iso_week_filename_and_index_link():
     with temp_dir() as tmp, local_server({"/feed.xml": RDF_FEED}) as base:
         _init(tmp)
         _prepare(tmp, f"{base}/feed.xml")
@@ -216,10 +216,10 @@ def test_weekly_report_uses_window_end_filename_and_index_link():
                           "--ref", "2026-11-02", "--no-llm", "--quiet"])
         )
         assert code == 0
-        report = tmp / "02-Reading" / "文献雷达" / "2026" / "11" / "2026-11-01.md"
+        report = tmp / "02-Reading" / "文献雷达" / "2026" / "11" / "2026-W44.md"
         assert report.exists()
         index = (tmp / "02-Reading" / "文献雷达" / "文献雷达索引.md").read_text(encoding="utf-8")
-        assert "[[2026-11-01]]" in index
+        assert "[[2026-W44]]" in index
         assert "2026-W44" in report.read_text(encoding="utf-8")
 
 
@@ -320,3 +320,100 @@ def test_run_creates_one_report_with_both_kinds():
         assert "## 预印本（1 篇）" in text
         index = (tmp / "02-Reading" / "文献雷达" / "文献雷达索引.md").read_text(encoding="utf-8")
         assert index.count("[[2026-10-30]]") == 1
+
+
+def test_weekly_command_builds_recap_from_daily_stores():
+    from litradar.model import Article, JournalScan
+    from litradar.paths import Paths
+    from litradar.state import atomic_write_json
+    from litradar.window import Window
+
+    with temp_dir() as tmp:
+        _init(tmp)
+        paths = Paths(tmp)
+        day = Window(kind="day", start=__import__("datetime").date(2026, 11, 2),
+                     end=__import__("datetime").date(2026, 11, 2))
+        article = Article(
+            title="Alpha paper", journal="Journal A", url="https://example.org/a",
+            doi="10.1/a", online_date=day.start, date_source="publisher",
+            abstract_raw="We study alpha.",
+        )
+        atomic_write_json(paths.store_file("2026-11-02"), {
+            "schema": 2, "run_id": "2026-11-02", "engine": "2.1.0",
+            "scan_at": "2026-11-02T09:00:00+08:00", "window": day.to_dict(),
+            "journals": [JournalScan(journal="Journal A", status="ok", items_seen=1).to_dict()],
+            "items": [article.to_dict()],
+            "date_unverified": [], "out_of_window": [], "excluded_type": [],
+        })
+        code, out = capture_stdout(
+            lambda: main(["weekly", "--vault", str(tmp), "--ref", "2026-11-06",
+                          "--no-llm", "--json"])
+        )
+        assert code == 0
+        report = tmp / "02-Reading" / "文献雷达" / "2026" / "11" / "2026-W45.md"
+        assert report.exists()
+        text = report.read_text(encoding="utf-8")
+        assert "kind: weekly" in text
+        assert "2026-W45" in text
+        assert "Alpha paper" in text
+        assert "没有抓取记录" in text
+
+
+def test_is_weekly_day_follows_config():
+    from helpers import make_context
+
+    from litradar.cli import _is_weekly_day
+    from litradar.util import today
+
+    with temp_dir() as tmp:
+        ctx = make_context(tmp)
+        current = today(ctx.tz).weekday()
+        ctx.config.raw.setdefault("weekly", {})["weekday"] = current
+        assert _is_weekly_day(ctx)
+        ctx.config.raw["weekly"]["weekday"] = (current + 1) % 7
+        assert not _is_weekly_day(ctx)
+        ctx.config.raw["weekly"]["weekday"] = current
+        ctx.config.raw["weekly"]["enabled"] = False
+        assert not _is_weekly_day(ctx)
+
+
+def test_weekly_kind_can_span_explicit_dates():
+    from litradar.cli import resolve_window
+    from litradar.config import load_config
+
+    with temp_dir() as tmp:
+        _init(tmp)
+        config = load_config(tmp)
+        args = type("Args", (), {})()
+        for name, value in (("date", None), ("start", "2026-10-26"),
+                            ("end", "2026-11-02"), ("window", None),
+                            ("kind", "weekly"), ("ref", None)):
+            setattr(args, name, value)
+        window = resolve_window(args, config)
+        assert window.kind == "weekly"
+        assert window.start.isoformat() == "2026-10-26"
+        assert window.end.isoformat() == "2026-11-02"
+        assert window.run_id == "2026-W44"
+
+
+def test_config_set_writes_overlay_and_list_redacts_key():
+    with temp_dir() as tmp:
+        _init(tmp)
+        code, _ = capture_stdout(
+            lambda: main(["config", "set", "screening.keyword_weight", "0.8", "--vault", str(tmp), "--quiet"])
+        )
+        assert code == 0
+        overlay = tmp / ".litradar" / "config.local.yaml"
+        assert overlay.exists()
+        assert "0.8" in overlay.read_text(encoding="utf-8")
+
+        code, _ = capture_stdout(
+            lambda: main(["config", "set", "llm.api_key", "sk-secret", "--vault", str(tmp), "--quiet"])
+        )
+        assert code == 0
+        code, out = capture_stdout(
+            lambda: main(["config", "list", "--json", "--vault", str(tmp), "--quiet"])
+        )
+        assert code == 0
+        assert "sk-secret" not in out
+        assert '"***"' in out

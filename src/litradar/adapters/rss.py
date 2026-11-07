@@ -60,6 +60,14 @@ def _text(node: ET.Element, *names: str) -> str:
     return _text_of(_first_child(node, names))
 
 
+def _channel(root: ET.Element) -> ET.Element:
+    """Return the feed-level ``channel`` element (RDF nests it one level down)."""
+    for child in _children(root):
+        if _local(child.tag) == "channel":
+            return child
+    return root
+
+
 def _link(node: ET.Element) -> str:
     for child in _children(node):
         if _local(child.tag) != "link":
@@ -112,15 +120,64 @@ def _abstract(node: ET.Element) -> str | None:
     return None
 
 
-def _content_type(node: ET.Element, journal: dict, title: str) -> str:
-    """Feed-declared item type beats title heuristics (Science ships dc:type)."""
-    declared = journal.get("content_type")
+def _declared_type(node: ET.Element) -> str:
+    """Publisher-declared category, if the feed carries one.
+
+    Science ships ``dc:type`` (Research Article / Perspective / Letter …);
+    Cell ships ``prism:section`` (Article / Resource / Preview …).  Nature and
+    PLOS do not, so callers fall back to the broad content type.
+    """
+    for name in ("type", "section", "category", "subject"):
+        value = _text(node, name)
+        if value:
+            return " ".join(value.split())[:80]
+    return ""
+
+
+_TYPE_LABELS = {
+    "research article": "Research Article",
+    "article": "Article",
+    "review": "Review",
+    "perspective": "Perspective",
+    "letter": "Letter",
+    "editorial": "Editorial",
+    "comment": "Comment",
+    "commentary": "Commentary",
+    "preview": "Preview",
+    "resource": "Resource",
+    "short article": "Short Article",
+    "correction": "Correction",
+    "errata": "Erratum",
+    "in depth": "In Depth",
+    "books et al.": "Books et al.",
+}
+
+
+def _article_type(declared: str, content_type: str) -> str:
     if declared:
-        return str(declared)
-    raw = " ".join(_text(node, name) for name in ("type", "section")).strip().lower()
+        key = declared.casefold().strip()
+        return _TYPE_LABELS.get(key, declared)
+    return {
+        "research-article": "Research Article",
+        "review": "Review",
+        "perspective": "Perspective",
+        "letter": "Letter",
+    }.get(content_type, "Other")
+
+
+def _content_type(node: ET.Element, journal: dict, title: str, declared: str = "") -> str:
+    """Feed-declared item type beats title heuristics (Science ships dc:type)."""
+    override = journal.get("content_type")
+    if override:
+        return str(override)
+    raw = (declared or _declared_type(node)).casefold()
     if raw:
         if "review" in raw:
             return "review"
+        if "perspective" in raw:
+            return "perspective"
+        if "letter" in raw:
+            return "letter"
         if "research article" in raw or raw == "report":
             return "research-article"
         if any(term in raw for term in _NON_RESEARCH_TYPES):
@@ -168,11 +225,12 @@ class RssAdapter(Adapter):
                 continue
             online_date, date_source = _date(entry)
             doi = _doi(entry, link)
+            declared = _declared_type(entry)
             prefixes = journal.get("exclude_doi_prefixes") or []
             if doi and any(doi.lower().startswith(str(prefix).lower()) for prefix in prefixes):
                 content_type = "other"
             else:
-                content_type = _content_type(entry, journal, title)
+                content_type = _content_type(entry, journal, title, declared)
             items.append(
                 Article(
                     title=title,
@@ -185,6 +243,27 @@ class RssAdapter(Adapter):
                     abstract_raw=_abstract(entry),
                     authors=_authors(entry),
                     content_type=content_type,
+                    article_type=_article_type(declared, content_type),
+                    extra={
+                        "volume": _text(entry, "volume") or None,
+                        "issue": _text(entry, "number", "issue") or None,
+                        "issue_identifier": _text(entry, "issueIdentifier") or None,
+                        "cover_date": _text(entry, "coverDisplayDate", "coverDate") or None,
+                    },
                 )
             )
-        return items, ok(journal, items, http=response.status, url=url)
+        channel = _channel(root)
+        volume = _text(channel, "volume") or None
+        issue = _text(channel, "number", "issue") or None
+        issue_identifier = _text(channel, "issueIdentifier") or None
+        cover_date = _text(channel, "coverDisplayDate", "coverDate") or None
+        return items, ok(
+            journal,
+            items,
+            http=response.status,
+            url=url,
+            volume=volume,
+            issue=issue,
+            issue_identifier=issue_identifier,
+            cover_date=cover_date,
+        )

@@ -44,10 +44,10 @@ GROUP_LABELS = (
 
 
 def split_by_window(
-    items: list[Article], window, include_types=("research-article", "review")
+    items: list[Article], window, include_types=("research-article", "review", "perspective", "letter")
 ) -> dict[str, list[Article]]:
     """Bucket adapter output the way the report's audit sections need it."""
-    allowed = tuple(include_types) if include_types else ("research-article", "review")
+    allowed = tuple(include_types) if include_types else ("research-article", "review", "perspective", "letter")
     buckets: dict[str, list[Article]] = {
         "in_window": [],
         "out_of_window": [],

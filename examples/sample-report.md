@@ -7,7 +7,8 @@ direction: "分子进化；群体基因组学；基因家族扩张"
 journals: ["Nature Genetics", "Nature Communications", "JAMIA", "bioRxiv"]
 window: "2026-10-30"
 coverage: complete
-screening: "keyword（关键词兜底）"
+screening: "llm-v1（deepseek-flash）"
+deepread: "deepread-v1（deepseek-flash）"
 new_items: 8
 journal_items: 5
 preprint_items: 3
@@ -23,12 +24,18 @@ run_id: "2026-10-30"
 > 研究方向：分子进化；群体基因组学；基因家族扩张
 > 收录范围：窗口内、官网可见、且此前未报告过的**全部**文章；相关性只决定置顶，不决定取舍
 > 预印本（bioRxiv / medRxiv）单列在「预印本」一节，未经同行评审
-> 置顶依据：keyword（关键词兜底）
+> 置顶依据：llm-v1（deepseek-flash）
+> 精读依据：deepread-v1（deepseek-flash）（机器翻译与概括，原文见每篇末）
 
 ## 与你最相关（2 篇）
 
-### 1. Positive selection on gene families in flowering plants
+### 1. 开花植物基因家族的正选择
+作者在多个开花植物基因组中扫描正选择信号，并结合基因家族扩张情况，找出同时出现扩张与正选择痕迹的家族；摘要未给出具体物种数量与功能验证结果。
+
+- 研究领域：分子进化/群体基因组学
+- 关键词：正选择 · 基因家族扩张 · 开花植物
 - 期刊：bioRxiv
+- 原文标题：Positive selection on gene families in flowering plants
 - 出版商状态：Preprints
 - 预印本：是（未经同行评审，结论需自行核实）
 - 预印本发布日期：2026-10-30
@@ -36,20 +43,23 @@ run_id: "2026-10-30"
 - DOI: https://doi.org/10.1101/2026.10.30.000001
 - 作者：未提供
 - 相关性：0.78 —— 关键词命中：positive selection、gene family expansion
-- 主题：positive selection · gene family expansion
 - 英文摘要：We scan genomes for positive selection and gene family expansion across flowering plants.
 - 可见性来源：https://doi.org/10.1101/2026.10.30.000001
 - 摘要来源：https://doi.org/10.1101/2026.10.30.000001
 
-### 2. Genome-wide association study of complex traits in a founder population
+### 2. 奠基者群体中复杂性状的全基因组关联研究
+作者在一个奠基者群体中，用全基因组测序数据开展复杂性状的全基因组关联研究，并报告了相关位点；摘要未给出具体位点数量与效应量。
+
+- 研究领域：遗传学/统计遗传学
+- 关键词：全基因组关联 · 奠基者群体 · 复杂性状
 - 期刊：Nature Genetics
+- 原文标题：Genome-wide association study of complex traits in a founder population
 - 出版商状态：Latest Research
 - 官网首次在线日期：2026-10-30
 - 首次观察时间：2026-11-02 18:17
 - DOI: https://doi.org/10.1038/s41588-026-02824-3
 - 作者：未提供
 - 相关性：0.70 —— 关键词命中：genome-wide association
-- 主题：genome-wide association
 - 英文摘要：A genome-wide association study identifies loci for complex traits in a founder population using whole-genome sequencing.
 - 可见性来源：https://doi.org/10.1038/s41588-026-02824-3
 - 摘要来源：https://doi.org/10.1038/s41588-026-02824-3

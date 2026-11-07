@@ -488,3 +488,23 @@ def test_rss_excludes_configured_doi_prefixes():
     by_doi = {item.doi: item.content_type for item in items}
     assert by_doi["10.1038/d41586-026-1"] == "other"
     assert by_doi["10.1038/s41586-026-2"] == "research-article"
+
+
+def test_crossref_publication_filter_keeps_print_only_science_record():
+    from urllib.parse import parse_qs, urlparse
+    payload = {"message": {"items": [{
+        "DOI": "10.1126/science.example", "title": ["Print only study"],
+        "type": "journal-article", "published-print": {"date-parts": [[2026, 10, 30]]},
+        "created": {"date-parts": [[2026, 10, 27]]},
+    }]}}
+    fetcher = FakeFetcher({"api.crossref.org": payload})
+    journal = _journal(name="Science", adapter="crossref", issn="0036-8075", date_filter="published")
+    items, scan = CrossrefAdapter().fetch(journal, fetcher, WINDOW)
+    query = parse_qs(urlparse(fetcher.calls[0]).query)["filter"][0]
+    assert "from-pub-date:2026-10-30" in query and "from-online" not in query
+    assert scan.status == "metadata-only"
+    assert items[0].online_date.isoformat() == "2026-10-30"
+    assert items[0].date_source == "crossref" and items[0].extra["date_basis"] == "published"
+    payload["message"]["items"][0].pop("published-print")
+    items, _ = CrossrefAdapter().fetch(journal, fetcher, WINDOW)
+    assert items[0].online_date is None  # deposit date is not publication

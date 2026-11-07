@@ -333,3 +333,50 @@ def test_summary_zh_from_model_is_rendered():
             llm.chat_json = original
         text = summary.report_path.read_text(encoding="utf-8")
         assert "一句话解读：用群体基因组数据识别了正选择位点" in text
+
+
+def test_usage_is_recorded_from_the_api_envelope():
+    reply = _completion(json.dumps({"results": []}))
+    reply["usage"] = {"prompt_tokens": 120, "completion_tokens": 30}
+    with chat_server(reply) as (base, _):
+        with temp_dir() as tmp:
+            config = make_config(tmp, llm={"base_url": base, "api_key_env": "LITRADAR_TEST_KEY",
+                                           "max_retries": 0,
+                                           "pricing": {"input_per_million": 2.0,
+                                                       "output_per_million": 8.0}})
+            os.environ["LITRADAR_TEST_KEY"] = "sk-test-000000000000"
+            usage = llm.new_usage()
+            try:
+                llm.chat_json(config, [{"role": "user", "content": "hi"}], usage=usage)
+            finally:
+                os.environ.pop("LITRADAR_TEST_KEY", None)
+            assert usage["calls"] == 1
+            assert usage["prompt_tokens"] == 120
+            assert usage["completion_tokens"] == 30
+            assert usage["estimated"] is False
+            assert llm.cost_cny(usage, config) == 0.0005  # 120/1e6*2 + 30/1e6*8
+
+
+def test_usage_falls_back_to_estimation_without_envelope():
+    reply = _completion(json.dumps({"results": []}))
+    with chat_server(reply) as (base, _):
+        with temp_dir() as tmp:
+            config = make_config(tmp, llm={"base_url": base, "api_key_env": "LITRADAR_TEST_KEY",
+                                           "max_retries": 0})
+            os.environ["LITRADAR_TEST_KEY"] = "sk-test-000000000000"
+            usage = llm.new_usage()
+            try:
+                llm.chat_json(config, [{"role": "user", "content": "一段中文和 English"}], usage=usage)
+            finally:
+                os.environ.pop("LITRADAR_TEST_KEY", None)
+            assert usage["calls"] == 1
+            assert usage["prompt_tokens"] > 0
+            assert usage["completion_tokens"] > 0
+            assert usage["estimated"] is True
+
+
+def test_merge_usage_adds_stages():
+    total = llm.new_usage()
+    llm.merge_usage(total, {"calls": 1, "prompt_tokens": 10, "completion_tokens": 2, "estimated": True})
+    llm.merge_usage(total, {"calls": 2, "prompt_tokens": 5, "completion_tokens": 3})
+    assert total == {"calls": 3, "prompt_tokens": 15, "completion_tokens": 5, "estimated": True}

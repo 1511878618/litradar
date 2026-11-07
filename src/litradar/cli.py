@@ -111,7 +111,13 @@ def resolve_window(args: argparse.Namespace, config: Config) -> Window:
     if report_kind == "weekly" and not (start or end):
         return build_window("weekly", tz=timezone, ref=_arg(args, "ref"))
     if start or end:
-        return build_window("explicit", tz=timezone, start=start, end=end, ref=_arg(args, "ref"))
+        window = build_window("explicit", tz=timezone, start=start, end=end,
+                              ref=_arg(args, "ref"))
+        if report_kind == "weekly":
+            # A weekly recap over an arbitrary span: keep the weekly title/naming,
+            # but honour the explicit dates (e.g. last Monday through today).
+            window = Window(kind="weekly", start=window.start, end=window.end, tz=timezone)
+        return window
     if date_arg:
         return build_window(date_str=date_arg, tz=timezone)
     kind = kind or str(config.get("schedule.window", "yesterday") or "yesterday")
@@ -236,6 +242,56 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         ctx.close()
 
 
+def cmd_recovery(args):
+    from .recovery import maintain, repair
+    ctx = make_context(args)
+    try:
+        with VaultLock(ctx.paths.lock_file):
+            if args.command == "repair":
+                if not args.run_id:
+                    raise ConfigError("repair 需要 --run-id，避免重试错误的批次")
+                result = repair(ctx, args.run_id, journal=args.journal,
+                                failed_only=True, use_llm=_use_llm(args, ctx.config))
+            else:
+                result = maintain(ctx, days=args.days,
+                                  ref=parse_date(args.ref) if args.ref else None,
+                                  use_llm=_use_llm(args, ctx.config))
+            if _arg(args, "as_json"):
+                _print_json(result)
+            rows = result if isinstance(result, list) else [result]
+            return EXIT_ALL_FAILED if any(row.get("coverage") == "failed" for row in rows) else EXIT_OK
+    finally:
+        ctx.close()
+
+
+def cmd_library_rebuild(args):
+    from .library import rebuild_presentations
+    ctx = make_context(args)
+    try:
+        with VaultLock(ctx.paths.lock_file):
+            count = rebuild_presentations(ctx)
+        _print_json({"indexed": count})
+        return EXIT_OK
+    finally:
+        ctx.close()
+
+
+def cmd_feedback(args):
+    from .library import feedback
+    from .model import Article
+    ctx = make_context(args)
+    try:
+        with VaultLock(ctx.paths.lock_file):
+            article = Article.from_dict(json.loads(args.article_json))
+            result = feedback(ctx.paths, article, args.value)
+            from .library import rebuild_presentations
+            rebuild_presentations(ctx)
+        _print_json({"saved": True, "feedback": result.get(article.id)})
+        return EXIT_OK
+    finally:
+        ctx.close()
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     ctx = make_context(args)
     try:
@@ -275,8 +331,71 @@ def cmd_render(args: argparse.Namespace) -> int:
                         "screening": summary.screening,
                         "rejected": summary.rejected,
                         "images": summary.images,
+                        "usage": summary.usage,
                     })
                 return scope.code
+    finally:
+        ctx.close()
+
+
+def _use_llm(args: argparse.Namespace, config: Config) -> bool:
+    if _arg(args, "no_llm"):
+        return False
+    if _arg(args, "llm"):
+        return True
+    return str(config.get("screening.mode", "llm")) == "llm"
+
+
+def _is_weekly_day(ctx: Context) -> bool:
+    from .config import parse_weekday
+
+    if not bool(ctx.config.get("weekly.enabled", True)):
+        return False
+    weekday = parse_weekday(ctx.config.get("weekly.weekday", 4))
+    if weekday is None:
+        return False
+    from .util import today
+
+    return today(ctx.tz).weekday() == weekday
+
+
+def _run_weekly(ctx: Context, args: argparse.Namespace, *, ref: Any = None) -> Any:
+    """Build this week's recap from the daily stores and render it."""
+    from .pipeline import assemble_weekly
+
+    window = build_window("week_to_date", tz=ctx.tz, ref=ref)
+    with RunScope(args, window.run_id, "weekly") as scope:
+        ctx.emitter = scope.emitter
+        ctx.logger.add_file(ctx.paths.run_log(window.run_id))
+        assemble_weekly(ctx, window)
+        report = render_report(
+            ctx, window.run_id, use_llm=_use_llm(args, ctx.config),
+            refresh=bool(_arg(args, "refresh")),
+        )
+        ctx.logger.info(
+            f"周报：{report.total} 篇，置顶 {report.highlights}，热点 {report.hotspots}；"
+            f"覆盖 {report.coverage} → {report.report_path}"
+        )
+        return report
+
+
+def cmd_weekly(args: argparse.Namespace) -> int:
+    ctx = make_context(args)
+    try:
+        rotate_logs(ctx.paths.logs_dir)
+        with VaultLock(ctx.paths.lock_file):
+            report = _run_weekly(ctx, args, ref=_arg(args, "ref"))
+            if _arg(args, "as_json"):
+                _print_json({
+                    "run_id": report.run_id,
+                    "items": report.total,
+                    "highlights": report.highlights,
+                    "coverage": report.coverage,
+                    "hotspots": report.hotspots,
+                    "usage": report.usage,
+                    "report": str(report.report_path) if report.report_path else None,
+                })
+            return EXIT_OK if report.coverage != "failed" else EXIT_ALL_FAILED
     finally:
         ctx.close()
 
@@ -337,8 +456,24 @@ def cmd_run(args: argparse.Namespace) -> int:
                         "coverage": report.coverage,
                         "screening": report.screening,
                         "images": report.images,
+                        "usage": report.usage,
                         "report": str(report.report_path) if report.report_path else None,
                     })
+
+            # Friday (or ``weekly.weekday``): same run, one extra file — the week recap.
+            if not _arg(args, "date") and not _arg(args, "catch_up") and _is_weekly_day(ctx):
+                try:
+                    weekly_report = _run_weekly(ctx, args)
+                    if _arg(args, "as_json"):
+                        _print_json({
+                            "weekly_run_id": weekly_report.run_id,
+                            "weekly_items": weekly_report.total,
+                            "weekly_hotspots": weekly_report.hotspots,
+                            "weekly_report": str(weekly_report.report_path)
+                            if weekly_report.report_path else None,
+                        })
+                except (EngineError, ConfigError) as exc:
+                    ctx.logger.warn(f"周报生成失败（日报不受影响）：{exc}")
         return code
     finally:
         ctx.close()
@@ -486,7 +621,8 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"{'期刊':<34}{'状态':<14}{'条目':>4}  {'上次成功':<20}说明")
         for name, entry in sorted(scans.items()):
             status = str(entry.get("status") or "?")
-            mark = {"ok": "✅", "metadata-only": "⚠", "blocked": "⛔", "timeout": "⏱", "error": "❌"}.get(status, "?")
+            mark = {"ok": "✅", "metadata-only": "⚠", "off-cycle": "🛌",
+                    "blocked": "⛔", "timeout": "⏱", "error": "❌"}.get(status, "?")
             print(
                 f"{name[:33]:<34}{mark + ' ' + status:<14}{entry.get('items_seen', 0):>4}  "
                 f"{_fmt_local(entry.get('last_ok_at'), ctx.tz):<20}{entry.get('reason') or ''}"
@@ -524,18 +660,29 @@ def cmd_journals(args: argparse.Namespace) -> int:
     try:
         command = _arg(args, "journals_command", "list")
         if command == "list":
+            from .config import WEEKDAY_LABELS
+
             journals = load_journals(ctx.config)
+
+            def cadence_of(journal: dict) -> str:
+                if journal.get("cadence") == "weekly" and isinstance(journal.get("weekday"), int):
+                    return "每周" + WEEKDAY_LABELS[journal["weekday"]][1:]
+                return "每日"
+
             rows = [
                 {"name": journal["name"], "adapter": journal["adapter"],
-                 "surface": journal.get("surface") or "", "slug": journal["slug"]}
+                 "surface": journal.get("surface") or "", "slug": journal["slug"],
+                 "cadence": journal.get("cadence") or "daily",
+                 "weekday": journal.get("weekday"),
+                 "updates": cadence_of(journal)}
                 for journal in journals
             ]
             if _arg(args, "as_json"):
                 _print_json(rows)
                 return EXIT_OK
-            print(f"{'期刊':<40}{'适配器':<12}栏目")
+            print(f"{'期刊':<40}{'适配器':<12}{'更新':<9}栏目")
             for row in rows:
-                print(f"{row['name'][:39]:<40}{row['adapter']:<12}{row['surface']}")
+                print(f"{row['name'][:39]:<40}{row['adapter']:<12}{row['updates']:<9}{row['surface']}")
             return EXIT_OK
         if command == "add":
             return _journals_add(args, ctx)
@@ -563,7 +710,11 @@ def _journals_add(args: argparse.Namespace, ctx: Context) -> int:
         item = _arg(args, "item_selector") or ""
         if item:
             entry["selectors"] = {"item": item}
-    elif adapter == "crossref":
+    if _arg(args, "cadence"):
+        entry["cadence"] = _arg(args, "cadence")
+    if _arg(args, "weekday"):
+        entry["weekday"] = _arg(args, "weekday")
+    if adapter == "crossref":
         entry["issn"] = _arg(args, "issn") or ""
     if _arg(args, "surface"):
         entry["surface"] = _arg(args, "surface")
@@ -676,6 +827,102 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _parse_config_value(raw: str) -> Any:
+    import yaml
+
+    text = raw.strip()
+    if text.startswith(("[", "{")):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return raw
+
+
+def _set_dotted(target: dict, dotted: str, value: Any) -> None:
+    parts = dotted.split(".")
+    node = target
+    for part in parts[:-1]:
+        child = node.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            node[part] = child
+        node = child
+    node[parts[-1]] = value
+
+
+def _unset_dotted(target: dict, dotted: str) -> bool:
+    parts = dotted.split(".")
+    node: Any = target
+    for part in parts[:-1]:
+        node = node.get(part) if isinstance(node, dict) else None
+    if isinstance(node, dict) and parts[-1] in node:
+        del node[parts[-1]]
+        return True
+    return False
+
+
+def _redacted_config(config: Config) -> dict:
+    data = json.loads(json.dumps(config.raw, ensure_ascii=False, default=str))
+    llm = data.get("llm") if isinstance(data.get("llm"), dict) else None
+    if llm and llm.get("api_key"):
+        llm["api_key"] = "***"
+    return data
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """Read/write settings; writes go to .litradar/config.local.yaml (comments safe)."""
+    import yaml
+
+    ctx = make_context(args)
+    try:
+        command = _arg(args, "config_command", "list")
+        overlay = ctx.paths.root / "config.local.yaml"
+        if command == "get":
+            key = str(_arg(args, "key") or "")
+            value = ctx.config.get(key)
+            if isinstance(value, (dict, list)):
+                print(json.dumps(value, ensure_ascii=False))
+            elif value is None:
+                print("")
+            else:
+                print(value)
+            return EXIT_OK
+        if command in ("set", "unset"):
+            key = str(_arg(args, "key") or "").strip()
+            if not key:
+                raise ConfigError("config set/unset 需要配置键，例如 llm.model")
+            data: dict = {}
+            if overlay.exists():
+                loaded = yaml.safe_load(overlay.read_text(encoding="utf-8")) or {}
+                if isinstance(loaded, dict):
+                    data = loaded
+            if command == "set":
+                _set_dotted(data, key, _parse_config_value(str(_arg(args, "value") or "")))
+            else:
+                _unset_dotted(data, key)
+            overlay.parent.mkdir(parents=True, exist_ok=True)
+            overlay.write_text(
+                yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
+            )
+            print(f"{key} = {json.dumps(_parse_config_value(str(_arg(args, 'value') or '')), ensure_ascii=False) if command == 'set' else '（已删除）'}")
+            print(f"写入 {overlay}（下次运行生效；config.yaml 不动）")
+            return EXIT_OK
+        if command == "list":
+            payload = _redacted_config(ctx.config)
+            if _arg(args, "as_json"):
+                _print_json(payload)
+            else:
+                print(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
+            return EXIT_OK
+        raise ConfigError(f"未知子命令 {command}")
+    finally:
+        ctx.close()
+
+
 def cmd_zotero(args: argparse.Namespace) -> int:
     from .zotero import ZoteroUnavailable, list_collections, push_items
 
@@ -684,6 +931,42 @@ def cmd_zotero(args: argparse.Namespace) -> int:
         if _arg(args, "api"):
             ctx.config.raw.setdefault("zotero", {})["api"] = str(_arg(args, "api"))
         command = _arg(args, "zotero_command", "collections")
+        if command == "reading":
+            from .model import Article
+            from .zotero_workflow import (
+                LocalAPI,
+                ensure_item,
+                item_view,
+                lookup,
+                migrate_legacy,
+                reading_list_payload,
+                set_status,
+            )
+            api = LocalAPI(ctx.config)
+            action = _arg(args, "action", "list")
+            if action == "list":
+                result = reading_list_payload(api)
+            elif action == "migrate":
+                result = migrate_legacy(api, _arg(args, "todo_status", "To Read"), _arg(args, "read_status", "Read"))
+            else:
+                article_data = json.loads(_arg(args, "article_json", "{}"))
+                article = Article.from_dict(article_data)
+                if action == "status":
+                    result = set_status(api, article, _arg(args, "status", "todo"), _arg(args, "collection", ""), _arg(args, "collection_date"))
+                elif action == "save":
+                    result = item_view(api, ensure_item(api, article, _arg(args, "collection", ""), _arg(args, "collection_date")), with_pdf=True)
+                elif action == "download":
+                    current = item_view(api, ensure_item(api, article, _arg(args, "collection", ""), _arg(args, "collection_date")))
+                    try:
+                        result = api.write("/api/users/0/litradar/pdf", {"key": current["key"]}, method="POST")
+                    except ZoteroUnavailable as exc:
+                        if "HTTP 404" in str(exc):
+                            raise ZoteroUnavailable("请在 Zotero 安装 Litradar PDF Bridge 扩展，以调用 Zotero 自己的全文查找器；条目已保存在 Zotero") from exc
+                        raise
+                else:
+                    result = lookup(api, article)
+            _print_json(result)
+            return EXIT_OK
         if command == "collections":
             try:
                 collections = list_collections(ctx.config)
@@ -693,7 +976,7 @@ def cmd_zotero(args: argparse.Namespace) -> int:
             rows = []
             for collection in collections:
                 data = collection.get("data") if isinstance(collection.get("data"), dict) else collection
-                rows.append({"key": data.get("key"), "name": data.get("name")})
+                rows.append(data)
             if _arg(args, "as_json"):
                 _print_json(rows)
             else:
@@ -720,6 +1003,7 @@ def cmd_zotero(args: argparse.Namespace) -> int:
                     ctx.config, articles,
                     session_id=f"litradar-{run_id}",
                     only_new=not _arg(args, "force"),
+                    collection_date=store.window.end.isoformat(),
                 )
             except ZoteroUnavailable as exc:
                 ctx.logger.warn(str(exc))
@@ -727,10 +1011,109 @@ def cmd_zotero(args: argparse.Namespace) -> int:
             if _arg(args, "as_json"):
                 _print_json(result)
             else:
-                print(f"入库 {result['pushed']} 篇，跳过 {result['skipped']} 篇，失败 {result['failed']} 篇")
+                print(f"新入库 {result['pushed']} 篇，复用 {result['skipped']} 篇，已归档 {result['archived']} 篇，失败 {result['failed']} 篇")
                 for error in result["errors"]:
                     print(f"  ! {error}")
             return EXIT_OK if result["failed"] == 0 else EXIT_FAIL
+        if command == "profile":
+            import yaml as _yaml
+
+            from .profile import (
+                build_profile,
+                llm_profile,
+                to_yaml,
+                write_profile_files,
+            )
+            from .zotero import ZoteroUnavailable, profile_data
+
+            names: list[str] = []
+            raw_collections = _arg(args, "collections")
+            if raw_collections:
+                names += [part.strip() for part in str(raw_collections).split(",") if part.strip()]
+            for name in _arg(args, "collection") or []:
+                if name and name not in names:
+                    names.append(name)
+            label = "、".join(names) or "整个文库"
+            try:
+                items, tags, source = profile_data(
+                    ctx.config, names or None, limit=int(_arg(args, "limit", 300) or 300)
+                )
+            except ZoteroUnavailable as exc:
+                ctx.logger.warn(str(exc))
+                return EXIT_DOCTOR
+
+            usage = None
+            profile = None
+            if _arg(args, "llm"):
+                from . import llm as llm_module
+
+                usage = llm_module.new_usage()
+                profile = llm_profile(ctx.config, items, tags, logger=ctx.logger, usage=usage)
+
+            if profile is None:
+                if _arg(args, "llm"):
+                    ctx.logger.warn("模型画像不可用，退回关键词画像")
+                built = build_profile(items, collection=label, tag_counts=tags)
+                profile = {
+                    "direction": built["direction"],
+                    "keywords": built["keywords"],
+                    "summary": "（未启用 LLM 或模型不可用：方向与关键词由收藏夹元数据自动统计）",
+                    "research_questions": [],
+                    "methods": [],
+                }
+                model_label = "deterministic"
+            else:
+                model_label = str(ctx.config.get("llm.model", ""))
+
+            from .util import iso
+
+            profile.update({
+                "sources": names or ["整个文库"],
+                "created_at": iso(),
+                "model": model_label,
+            })
+            name = str(_arg(args, "name") or "").strip() or (
+                names[0] if len(names) == 1 else (label if names else "default")
+            )
+            yaml_path, md_path = write_profile_files(ctx.paths.root, name, profile)
+
+            if _arg(args, "write"):
+                active = {
+                    "direction": profile["direction"],
+                    "keywords": profile["keywords"],
+                    "summary": profile.get("summary"),
+                    "sources": profile["sources"],
+                }
+                (ctx.paths.root / "profile.yaml").write_text(
+                    _yaml.safe_dump(active, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8",
+                )
+
+            if _arg(args, "as_json"):
+                _print_json({
+                    **profile,
+                    "scanned": len(items),
+                    "zotero_source": source,
+                    "yaml": str(yaml_path),
+                    "markdown": str(md_path),
+                    "active": bool(_arg(args, "write")),
+                    "usage": usage or {},
+                })
+            else:
+                print(f"# 来源：Zotero {source}；扫描 {len(items)} 条（{label}）")
+                print(f"# 模型：{model_label}")
+                print(to_yaml(
+                    {"direction": profile["direction"], "keywords": profile["keywords"],
+                     "scanned": len(items), "collection": label},
+                    source=f"Zotero {label}",
+                ))
+                print(f"已保存：{yaml_path}")
+                print(f"         {md_path}")
+                if _arg(args, "write"):
+                    print(f"已生效：{ctx.paths.root / 'profile.yaml'}（下次运行生效）")
+                else:
+                    print("（加 --write 才覆盖当前生效的 profile.yaml）")
+            return EXIT_OK
         raise ConfigError(f"未知子命令 {command}")
     finally:
         ctx.close()
@@ -774,6 +1157,13 @@ def build_parser() -> argparse.ArgumentParser:
     render.set_defaults(handler=cmd_render)
 
     run = subparsers.add_parser("run", parents=[], help="fetch + render")
+    weekly = subparsers.add_parser("weekly", parents=[], help="本周回顾：合并本周日报 + 热点（默认周一到今天）")
+    add_common(weekly)
+    weekly.add_argument("--ref", help="汇总到哪一天（默认今天）")
+    weekly.add_argument("--llm", action="store_true", help="启用模型（排序 / 精读 / 热点）")
+    weekly.add_argument("--no-llm", action="store_true", help="关闭模型")
+    weekly.add_argument("--refresh", action="store_true", help="重新生成已有周报")
+    weekly.set_defaults(handler=cmd_weekly)
     add_common(run)
     add_window_args(run)
     run.add_argument("--journal", action="append", help="只跑指定刊（可重复）")
@@ -786,6 +1176,25 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--catch-up", action="store_true", help="补跑最近缺失的日期")
     run.add_argument("--max-days", type=int, default=3, help="补跑最多几天")
     run.set_defaults(handler=cmd_run)
+
+    for name in ("repair", "maintain"):
+        recovery = subparsers.add_parser(name, help="单刊重试 / 补齐与回查迟到记录")
+        add_common(recovery)
+        recovery.add_argument("--llm", action="store_true")
+        recovery.add_argument("--no-llm", action="store_true")
+        recovery.add_argument("--run-id")
+        recovery.add_argument("--journal")
+        recovery.add_argument("--days", type=int, default=3)
+        recovery.add_argument("--ref")
+        recovery.set_defaults(handler=cmd_recovery)
+    library_rebuild = subparsers.add_parser("library-rebuild", help="从本地缓存构建中文文献库，不联网、不改写日报")
+    add_common(library_rebuild)
+    library_rebuild.set_defaults(handler=cmd_library_rebuild)
+    feedback = subparsers.add_parser("feedback", help="记录可撤销的推荐反馈")
+    add_common(feedback)
+    feedback.add_argument("--article-json", required=True)
+    feedback.add_argument("--value", choices=["relevant", "irrelevant", "less", "clear"], required=True)
+    feedback.set_defaults(handler=cmd_feedback)
 
     embed = subparsers.add_parser("embed", parents=[], help="算相关度 → runs/<date>/scores.json")
     add_common(embed)
@@ -804,7 +1213,7 @@ def build_parser() -> argparse.ArgumentParser:
     screen.add_argument("--strict", action="store_true", help="有拒收时以退出码 3 结束")
     screen.set_defaults(handler=cmd_screen)
 
-    status = subparsers.add_parser("status", parents=[], help="上次抓取与三态覆盖")
+    status = subparsers.add_parser("status", parents=[], help="上次抓取与覆盖状态")
     add_common(status)
     status.set_defaults(handler=cmd_status)
 
@@ -828,6 +1237,8 @@ def build_parser() -> argparse.ArgumentParser:
     journals_add.add_argument("--issn", help="ISSN（crossref 必填）")
     journals_add.add_argument("--surface", help="官网栏目名，如 Latest Research")
     journals_add.add_argument("--item-selector", help="html 适配器的条容器选择器")
+    journals_add.add_argument("--cadence", choices=["daily", "weekly"], help="更新节奏（默认 daily）")
+    journals_add.add_argument("--weekday", help="weekly 的更新星期：mon..sun 或 0..6")
     journals_add.set_defaults(handler=cmd_journals)
     journals_test = journals_sub.add_parser("test", parents=[], help="抓一次并打印前 3 条")
     add_common(journals_test)
@@ -859,6 +1270,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(upgrade)
     upgrade.set_defaults(handler=cmd_upgrade)
 
+    config_parser = subparsers.add_parser(
+        "config", parents=[], help="get / set / unset / list（写入 .litradar/config.local.yaml）"
+    )
+    add_common(config_parser)
+    config_sub = config_parser.add_subparsers(dest="config_command")
+    for name, help_text in (("list", "查看生效配置"), ("get", "读一个配置项"),
+                            ("set", "写一个配置项"), ("unset", "删除一个覆盖项")):
+        child = config_sub.add_parser(name, parents=[], help=help_text)
+        add_common(child)
+        if name in ("get", "set", "unset"):
+            child.add_argument("key", help="点号路径，例如 llm.model / screening.keyword_weight")
+        if name == "set":
+            child.add_argument("value", help="值；JSON/列表可直接写 [\"a\",\"b\"]")
+        child.set_defaults(handler=cmd_config)
+    config_parser.set_defaults(handler=cmd_config)
+    config_parser.set_defaults(config_command="list")
+
     zotero = subparsers.add_parser("zotero", parents=[], help="collections / push")
     add_common(zotero)
     zotero_sub = zotero.add_subparsers(dest="zotero_command")
@@ -874,6 +1302,28 @@ def build_parser() -> argparse.ArgumentParser:
     zotero_push.add_argument("--force", action="store_true", help="不按 DOI 查重")
     zotero_push.add_argument("--api", help="Zotero 本地 API（默认取配置）")
     zotero_push.set_defaults(handler=cmd_zotero)
+    zotero_reading = zotero_sub.add_parser("reading", help="Zotero 阅读状态、入库与 PDF")
+    add_common(zotero_reading)
+    zotero_reading.add_argument("--action", choices=["list", "lookup", "status", "save", "download", "migrate"], default="list")
+    zotero_reading.add_argument("--article-json", default="{}")
+    zotero_reading.add_argument("--status", default="To Read", help="Reading List 状态名称；空字符串清除状态")
+    zotero_reading.add_argument("--todo-status", default="To Read", help="迁移旧待读记录的目标状态")
+    zotero_reading.add_argument("--read-status", default="Read", help="迁移旧已读记录的目标状态")
+    zotero_reading.add_argument("--collection", default="", help="明确指定保存收藏夹；默认自动创建每日专属收藏夹")
+    zotero_reading.add_argument("--collection-date", help="每日归档日期 YYYY-MM-DD；默认按配置时区取今天")
+    zotero_reading.set_defaults(handler=cmd_zotero)
+    zotero_profile = zotero_sub.add_parser("profile", parents=[], help="用 Zotero 收藏夹生成研究画像")
+    add_common(zotero_profile)
+    zotero_profile.add_argument("--collection", action="append",
+                                help="收藏夹名，可重复（默认整个文库）")
+    zotero_profile.add_argument("--collections", help="逗号分隔的收藏夹名，如 \"EHR,心血管疾病\"")
+    zotero_profile.add_argument("--name", help="画像名（决定 profiles/<name>.yaml）")
+    zotero_profile.add_argument("--llm", action="store_true",
+                                help="用模型归纳画像（失败自动退回关键词画像）")
+    zotero_profile.add_argument("--limit", type=int, default=300, help="最多读多少条（默认 300）")
+    zotero_profile.add_argument("--write", action="store_true",
+                                help="同时写 .litradar/profile.yaml（下次运行生效）")
+    zotero_profile.set_defaults(handler=cmd_zotero)
     zotero.set_defaults(handler=cmd_zotero)
     zotero.set_defaults(zotero_command="collections")
 

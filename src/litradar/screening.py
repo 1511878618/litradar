@@ -28,6 +28,9 @@ SYSTEM_PROMPT = """你是文献筛选助手。给你一个研究方向和一批�
 6. conclusion 可留空。填写时必须是论文自己给出的结论（不是你的总结），且 conclusion_source
    必须是该论文的原文页面 URL（https://...），否则留空。
 7. topic_tags 最多 3 个中文短语。
+7b. keywords：3–6 个关键词，**优先用标题/摘要里的英文原词**（如 "EHR foundation models"、
+    "polygenic risk score"），不要翻译成中文；用于和用户自己的关键词表做匹配。
+    找不到合适原词时再写中文短语。
 8. 绝对不要输出"总体趋势""研究热点""本期亮点"之类的综述内容。
 9. 拿不准时 relevant=false、relevance 给低分；不要为了凑数而抬高分数。"""
 
@@ -89,6 +92,40 @@ def extract_results(payload: Any) -> list[dict]:
 
 
 _WORD_RE = re.compile(r"[a-z0-9\-]+")
+
+
+def keyword_overlap(article_keywords: list[str], profile_keywords: list[str]) -> float | None:
+    """How much of the user's keyword list an article's extracted keywords cover.
+
+    Deterministic on purpose: the model only *extracts* terms, this decides the
+    score, so two runs with the same keywords never disagree.
+    """
+    profile = [collapse(word).casefold() for word in profile_keywords if collapse(word)]
+    if not article_keywords or not profile:
+        return None
+    def words(text: str) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", text.casefold()))
+
+    hits = 0
+    for target in profile:
+        target_words = words(target)
+        for word in article_keywords:
+            candidate = collapse(word).casefold()
+            if not candidate:
+                continue
+            if candidate == target or (len(target) >= 3 and target in candidate) or (
+                len(candidate) >= 3 and candidate in target
+            ):
+                hits += 1
+                break
+            # Same phrase, different order ("foundation models for EHR").
+            if len(target_words) >= 2 and target_words & words(candidate):
+                shared = target_words & words(candidate)
+                if len(shared) >= max(2, int(len(target_words) * 0.7 + 0.999)):
+                    hits += 1
+                    break
+    # Three hits is "clearly this is my topic"; more do not add much.
+    return min(1.0, hits / min(3, len(profile)))
 
 
 def keyword_hits(article: Article, keywords: list[str]) -> list[str]:

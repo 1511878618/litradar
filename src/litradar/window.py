@@ -8,7 +8,7 @@ from typing import Any
 
 from .util import ConfigError, parse_date, today
 
-KINDS = ("today", "yesterday", "last_week", "last_n_days", "explicit", "weekly", "day")
+KINDS = ("today", "yesterday", "last_week", "last_n_days", "explicit", "weekly", "week_to_date", "day")
 
 
 @dataclass(frozen=True)
@@ -26,7 +26,7 @@ class Window:
             object.__setattr__(self, "label", self._default_label())
 
     def _default_label(self) -> str:
-        if self.kind == "weekly":
+        if self.kind in ("weekly", "week_to_date"):
             return f"{self.week_label}（{self.start} ~ {self.end}）"
         if self.single_day:
             return self.start.isoformat()
@@ -47,7 +47,7 @@ class Window:
 
     @property
     def run_id(self) -> str:
-        if self.kind == "weekly":
+        if self.kind in ("weekly", "week_to_date"):
             return self.week_label
         if self.single_day:
             return self.start.isoformat()
@@ -55,6 +55,13 @@ class Window:
 
     def contains(self, value: date | None) -> bool:
         return value is not None and self.start <= value <= self.end
+
+    def covers_weekday(self, weekday: int) -> bool:
+        """Does any day of the window fall on ``weekday`` (Monday=0)?"""
+        if not 0 <= weekday <= 6:
+            return False
+        span = (self.end - self.start).days + 1
+        return any((self.start + timedelta(days=offset)).weekday() == weekday for offset in range(span))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -116,6 +123,10 @@ def build_window(
         cursor = ref_day - timedelta(days=7)
         start_day = cursor - timedelta(days=cursor.weekday())
         return Window(kind=kind, start=start_day, end=start_day + timedelta(days=6), tz=tz)
+    if kind == "week_to_date":
+        # "This week so far": Monday through the reference day (Friday by default).
+        start_day = ref_day - timedelta(days=ref_day.weekday())
+        return Window(kind=kind, start=start_day, end=ref_day, tz=tz)
     if kind == "explicit":
         start_day, end_day = parse_date(start), parse_date(end)
         if not start_day or not end_day:

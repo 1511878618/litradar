@@ -26,6 +26,10 @@ def ok(
     status: str = "ok",
     visibility: str = "publisher",
     reason: str | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    issue_identifier: str | None = None,
+    cover_date: str | None = None,
 ) -> JournalScan:
     return JournalScan(
         journal=journal["name"],
@@ -37,6 +41,12 @@ def ok(
         reason=reason,
         scanned_at=iso(),
         visibility=visibility,
+        cadence=journal.get("cadence") or "daily",
+        weekday=journal.get("weekday"),
+        volume=volume,
+        issue=issue,
+        issue_identifier=issue_identifier,
+        cover_date=cover_date,
     )
 
 
@@ -60,6 +70,8 @@ def failed(
         reason=reason,
         scanned_at=iso(),
         visibility="metadata-only" if reason and "metadata" in reason else "publisher",
+        cadence=journal.get("cadence") or "daily",
+        weekday=journal.get("weekday"),
     )
 
 

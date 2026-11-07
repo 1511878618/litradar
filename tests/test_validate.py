@@ -183,3 +183,17 @@ def test_validation_report_serialises():
     payload = report.to_dict()
     assert item.id in payload["results"]
     assert payload["results"][item.id]["relevant"] is True
+
+
+def test_result_keywords_are_cleaned_and_capped():
+    article = _item()
+    raw = [{
+        "id": article.id, "relevant": True, "relevance": 0.8,
+        "keywords": [" EHR foundation models ", "ehr foundation models", "Mamba", 3, "", "x6", "y7", "z8", "w9"],
+    }]
+    report = validate_results(raw, [article], default_hosts([article]))
+    result = report.results[article.id]
+    assert result.keywords[0] == "EHR foundation models"
+    assert result.keywords.count("EHR foundation models") == 1
+    assert len(result.keywords) <= 8
+    assert "3" in result.keywords

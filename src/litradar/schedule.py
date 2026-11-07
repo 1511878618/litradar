@@ -33,6 +33,15 @@ def wrapper_name(platform: str | None = None) -> str:
 
 
 def wrapper_path(vault: Path | str, platform: str | None = None) -> Path:
+    """Where the scheduler wrapper lives.
+
+    macOS refuses to *execute* scripts stored under TCC-protected folders such as
+    ``~/Desktop`` even when ``/bin/sh -c`` itself is allowed, so the LaunchAgent
+    wrapper lives in Application Support.  Linux/Windows keep it inside the vault
+    for portability.
+    """
+    if (platform or platform_key()) == "darwin":
+        return Path.home() / "Library" / "Application Support" / "litradar" / wrapper_name(platform)
     return Path(vault).expanduser().resolve() / ".litradar" / wrapper_name(platform)
 
 

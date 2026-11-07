@@ -16,9 +16,9 @@ from typing import Any
 from .util import collapse, norm_title
 
 DATE_SOURCES = ("publisher", "crossref", "manual", "missing")
-CONTENT_TYPES = ("research-article", "review", "other")
-SCAN_STATUSES = ("ok", "metadata-only", "blocked", "timeout", "error")
-HEALTHY_STATUSES = ("ok", "metadata-only")
+CONTENT_TYPES = ("research-article", "review", "perspective", "letter", "other")
+SCAN_STATUSES = ("ok", "metadata-only", "off-cycle", "blocked", "timeout", "error")
+HEALTHY_STATUSES = ("ok", "metadata-only", "off-cycle")
 
 _DOI_PREFIX_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.IGNORECASE)
 _DOI_TRAILING = ".,;:)]}\"'"
@@ -63,6 +63,10 @@ class Article:
     abstract_source: str | None = None
     authors: list[str] = field(default_factory=list)
     content_type: str = "research-article"
+    # Publisher-declared article category (Research Article, Perspective,
+    # Letter, Resource, Review…).  ``content_type`` stays the coarse filter;
+    # this is the human label shown in the panel and report.
+    article_type: str | None = None
     first_seen_at: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -75,6 +79,8 @@ class Article:
             self.date_source = "missing"
         if self.content_type not in CONTENT_TYPES:
             self.content_type = "other"
+        if self.article_type:
+            self.article_type = collapse(self.article_type)[:80] or None
         if not self.authors:
             self.authors = []
 
@@ -109,6 +115,7 @@ class Article:
             "abstract_source": self.abstract_source,
             "authors": list(self.authors),
             "content_type": self.content_type,
+            "article_type": self.article_type,
             "first_seen_at": self.first_seen_at,
             "extra": dict(self.extra or {}),
         }
@@ -129,6 +136,7 @@ class Article:
             abstract_source=data.get("abstract_source"),
             authors=list(data.get("authors") or []),
             content_type=data.get("content_type") or "research-article",
+            article_type=data.get("article_type"),
             first_seen_at=data.get("first_seen_at"),
             extra=dict(data.get("extra") or {}),
         )
@@ -147,10 +155,23 @@ class JournalScan:
     reason: str | None = None
     scanned_at: str | None = None
     visibility: str = "publisher"
+    # Publication rhythm and the issue the scan is looking at.  ``cadence`` is
+    # always present (daily/weekly); the issue fields are best-effort because
+    # RSS feeds rarely expose them and Crossref only does for print issues.
+    cadence: str = "daily"
+    weekday: int | None = None
+    volume: str | None = None
+    issue: str | None = None
+    issue_identifier: str | None = None
+    cover_date: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in SCAN_STATUSES:
             self.status = "error"
+        if self.cadence not in ("daily", "weekly"):
+            self.cadence = "daily"
+        if self.cadence == "daily":
+            self.weekday = None
 
     @property
     def healthy(self) -> bool:
@@ -158,7 +179,9 @@ class JournalScan:
 
     @property
     def complete(self) -> bool:
-        return self.status == "ok" and self.visibility == "publisher"
+        # ``off-cycle`` is a verified answer too: we reached the publisher and it
+        # simply does not publish on this weekday (see journals/<slug>.yaml).
+        return self.status in ("ok", "off-cycle") and self.visibility == "publisher"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +194,12 @@ class JournalScan:
             "reason": self.reason,
             "scanned_at": self.scanned_at,
             "visibility": self.visibility,
+            "cadence": self.cadence,
+            "weekday": self.weekday,
+            "volume": self.volume,
+            "issue": self.issue,
+            "issue_identifier": self.issue_identifier,
+            "cover_date": self.cover_date,
         }
 
     @classmethod
@@ -185,6 +214,12 @@ class JournalScan:
             reason=data.get("reason"),
             scanned_at=data.get("scanned_at"),
             visibility=data.get("visibility") or "publisher",
+            cadence=data.get("cadence") or "daily",
+            weekday=data.get("weekday"),
+            volume=data.get("volume"),
+            issue=data.get("issue"),
+            issue_identifier=data.get("issue_identifier"),
+            cover_date=data.get("cover_date"),
         )
 
 

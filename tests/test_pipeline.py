@@ -302,3 +302,103 @@ def test_one_report_contains_journal_and_preprint_sections():
         assert text.index("## 期刊") < text.index("## 预印本")
         assert not (summary.report_path.parent / "2026-10-30-preprint.md").exists()
         assert len(load_seen(ctx.paths.seen_file)) == 2
+
+
+def test_apply_cadence_marks_non_publishing_day():
+    from datetime import date
+
+    from litradar.model import JournalScan
+    from litradar.pipeline import _apply_cadence
+    from litradar.window import Window
+
+    journal = {"name": "Weekly Review", "cadence": "weekly", "weekday": 2}  # Wednesday
+    thursday = Window(kind="day", start=date(2026, 11, 5), end=date(2026, 11, 5))
+    scan = JournalScan(journal="Weekly Review", status="ok", items_seen=0)
+    _apply_cadence(journal, scan, [], thursday)
+    assert scan.status == "off-cycle"
+    assert scan.reason == "周三更新"
+    assert scan.items_seen == 0
+
+
+def test_apply_cadence_flags_a_missed_issue():
+    from datetime import date
+
+    from litradar.model import JournalScan
+    from litradar.pipeline import _apply_cadence
+    from litradar.window import Window
+
+    journal = {"name": "Weekly Review", "cadence": "weekly", "weekday": 2}
+    wednesday = Window(kind="day", start=date(2026, 11, 4), end=date(2026, 11, 4))
+    scan = JournalScan(journal="Weekly Review", status="ok", items_seen=0)
+    _apply_cadence(journal, scan, [], wednesday)
+    assert scan.status == "ok"
+    assert "本轮 0 篇" in scan.reason
+
+
+def test_apply_cadence_leaves_daily_and_non_empty_scans_alone():
+    from datetime import date
+
+    from litradar.model import JournalScan
+    from litradar.pipeline import _apply_cadence
+    from litradar.window import Window
+
+    window = Window(kind="day", start=date(2026, 11, 5), end=date(2026, 11, 5))
+    daily = JournalScan(journal="Daily", status="ok", items_seen=0)
+    _apply_cadence({"name": "Daily", "cadence": "daily"}, daily, [], window)
+    assert daily.status == "ok" and daily.reason is None
+
+    weekly = JournalScan(journal="Weekly Review", status="ok", items_seen=1)
+    from helpers import sample_article
+
+    _apply_cadence({"name": "Weekly Review", "cadence": "weekly", "weekday": 2},
+                   weekly, [sample_article(online_date=date(2026, 11, 5))], window)
+    assert weekly.status == "ok" and weekly.reason is None
+
+
+def test_split_preprints_writes_two_files():
+    from helpers import make_context, write_journal
+    from helpers import temp_dir as _temp_dir
+
+    temp_dir = _temp_dir
+    from litradar.config import load_journals
+    from litradar.pipeline import fetch_all, render_report
+
+    with temp_dir() as tmp:
+        ctx = make_context(tmp, output={"split_preprints": True})
+        write_journal(tmp, {
+            "name": "Journal X", "adapter": "manual",
+            "items": [{"title": "A journal paper on genomes chromatin wheat assembly variants", "url": "https://example.org/j",
+                       "date": "2026-10-30", "abstract": "We analyse genome variants."}],
+        })
+        write_journal(tmp, {
+            "name": "bioRxiv", "adapter": "manual", "preprint": True,
+            "items": [{"title": "A preprint on genomes clinical cardiac markers imaging", "url": "https://example.org/p",
+                       "date": "2026-10-30", "abstract": "We analyse genome variants."}],
+        })
+        fetch_all(ctx, WINDOW, load_journals(ctx.config))
+        summary = render_report(ctx, "2026-10-30", use_llm=False)
+
+        main = summary.report_path
+        preprint = main.with_name(main.stem + "-preprint.md")
+        assert main.exists() and preprint.exists()
+        main_text = main.read_text(encoding="utf-8")
+        preprint_text = preprint.read_text(encoding="utf-8")
+        assert "A journal paper on genomes" in main_text
+        assert "A preprint on genomes" not in main_text
+        assert "A preprint on genomes" in preprint_text
+        assert "A journal paper on genomes" not in preprint_text
+        assert "[[2026-10-30-preprint]]" in main_text
+        assert "[[2026-10-30]]" in preprint_text
+        # Separate assets must reflect each report, not the combined batch.
+        import re
+        main_cloud = re.search(r"!\[今日词云\]\(([^)]+)\)", main_text).group(1)
+        pre_cloud = re.search(r"!\[今日词云\]\(([^)]+)\)", preprint_text).group(1)
+        assert main_cloud != pre_cloud
+        main_svg = (main.parent / main_cloud).read_text()
+        pre_svg = (preprint.parent / pre_cloud).read_text()
+        assert "wheat" in main_svg and "cardiac" not in main_svg
+        assert "cardiac" in pre_svg and "wheat" not in pre_svg
+        assert "1 articles" in main_svg and "1 articles" in pre_svg
+
+        index = (tmp / "02-Reading" / "文献雷达" / "文献雷达索引.md").read_text(encoding="utf-8")
+        assert "[[2026-10-30]]" in index and "[[2026-10-30-preprint]]" in index

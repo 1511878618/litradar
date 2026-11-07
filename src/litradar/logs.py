@@ -35,10 +35,22 @@ class Logger:
             self.add_file(file_path)
 
     def add_file(self, file_path: Path | str) -> None:
-        """Attach another log file (every run keeps ``runs/<id>/run.log`` too)."""
+        """Attach another log file (every run keeps ``runs/<id>/run.log`` too).
+
+        A log file we cannot open (read-only vault, macOS TCC, full disk) must never
+        take the command down: stderr keeps working, and the reason is printed once.
+        """
         path = Path(file_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._files.append(open(path, "a", encoding="utf-8"))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = open(path, "a", encoding="utf-8")
+        except OSError as exc:
+            try:
+                print(f"WARN  无法写日志文件 {path}：{exc}（仅输出到 stderr）", file=self.stream)
+            except (OSError, ValueError):
+                pass
+            return
+        self._files.append(handle)
 
     def _write(self, level: str, message: str) -> None:
         if LEVELS[level] < self.level:

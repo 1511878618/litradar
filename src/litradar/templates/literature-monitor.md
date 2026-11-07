@@ -11,6 +11,7 @@ litradar doctor --vault "$VAULT" --json      # 依赖与每刊可达性
 litradar fetch  --vault "$VAULT" --window yesterday --jsonl
 litradar render --vault "$VAULT" --date YYYY-MM-DD --no-llm
 litradar run    --vault "$VAULT" --window yesterday --llm --jsonl
+litradar weekly --vault "$VAULT" --llm --json        # 本周回顾（周一~今天）
 litradar embed  --vault "$VAULT" --date YYYY-MM-DD
 ```
 
@@ -44,6 +45,11 @@ litradar embed  --vault "$VAULT" --date YYYY-MM-DD
 litradar screen --vault "$VAULT" --file screen.json --date 2026-10-29 --apply --strict
 litradar render --vault "$VAULT" --date 2026-10-29 --no-llm
 ```
+
+## 精读（可选）
+
+模型可用时，引擎会给置顶的几篇写中文精读，存在 `runs/<date>/deepread.json`；
+它只是展示层，**不要手改**。想换标题/解读，用 `--refresh` 重跑，或改 `deepread.max_items` / 关闭 `deepread.enabled`。
 
 ## 硬性禁止
 

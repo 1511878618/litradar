@@ -87,3 +87,18 @@ def test_unknown_kind():
     except ConfigError:
         return
     raise AssertionError("expected ConfigError")
+
+
+def test_covers_weekday_spans_the_window():
+    from datetime import date
+
+    from litradar.window import Window
+
+    # 2026-11-02 is a Monday; the week 11-02..11-08 covers every weekday once.
+    window = Window(kind="explicit", start=date(2026, 11, 2), end=date(2026, 11, 8))
+    for weekday in range(7):
+        assert window.covers_weekday(weekday)
+    sunday_only = Window(kind="day", start=date(2026, 11, 8), end=date(2026, 11, 8))
+    assert sunday_only.covers_weekday(6)
+    assert not sunday_only.covers_weekday(2)
+    assert not sunday_only.covers_weekday(9)

@@ -146,10 +146,12 @@ class BiorxivAdapter(Adapter):
             abstract_raw=clean_abstract(entry.get("abstract"), max_chars=2000),
             authors=authors,
             content_type="research-article",
+            article_type="Preprint",
             extra={
                 "preprint": label,
                 "version": version,
                 "category": entry.get("category"),
                 "posted": entry.get("date"),
+                "published_doi": entry.get("published"),
             },
         )

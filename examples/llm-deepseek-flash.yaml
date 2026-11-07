@@ -30,6 +30,16 @@ llm:
   max_abstract_chars: 1200          # 每篇送进模型的摘要上限
   json_mode: true                   # 模型不接受 response_format 时改成 false
 
+weekly:
+  enabled: true                     # 每周固定一天出周报（含本周热点）
+  weekday: fri
+
+deepread:
+  enabled: true                     # 置顶几篇的中文精读（标题/领域/解读/关键词）
+  max_items: 8                      # 每一篇都是一次额外上下文，按预算调整
+  model: ""                         # 留空沿用 llm.model
+  max_abstract_chars: 1800
+
 screening:
   mode: llm
   min_relevance: 0.6                # 低于它不进置顶（仍进正文全量列表）

@@ -225,3 +225,22 @@ def test_doctor_warns_about_inline_api_key():
         assert check.name == "llm"
         assert check.severity == "warn"
         assert "config.yaml" in check.detail
+
+
+def test_logger_survives_an_unwritable_log_file():
+    import os
+
+    from helpers import temp_dir
+
+    from litradar.logs import Logger
+
+    with temp_dir() as tmp:
+        locked = tmp / "locked"
+        locked.mkdir()
+        os.chmod(locked, 0o500)
+        try:
+            logger = Logger(file_path=locked / "cli.log")  # must not raise
+            logger.info("still works")
+            assert logger._files == []
+        finally:
+            os.chmod(locked, 0o700)

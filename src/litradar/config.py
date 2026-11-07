@@ -18,6 +18,17 @@ from .paths import Paths
 from .util import ConfigError, collapse, slugify
 
 ADAPTER_NAMES = ("rss", "crossref", "html", "biorxiv", "browser", "manual", "custom")
+JOURNAL_CADENCES = ("daily", "weekly")
+WEEKDAYS = {
+    "mon": 0, "monday": 0, "周一": 0, "星期一": 0,
+    "tue": 1, "tuesday": 1, "周二": 1, "星期二": 1,
+    "wed": 2, "wednesday": 2, "周三": 2, "星期三": 2,
+    "thu": 3, "thursday": 3, "周四": 3, "星期四": 3,
+    "fri": 4, "friday": 4, "周五": 4, "星期五": 4,
+    "sat": 5, "saturday": 5, "周六": 5, "星期六": 5,
+    "sun": 6, "sunday": 6, "周日": 6, "周天": 6, "星期日": 6, "星期天": 6,
+}
+WEEKDAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 DEFAULTS: dict[str, Any] = {
     "version": 1,
@@ -27,6 +38,9 @@ DEFAULTS: dict[str, Any] = {
     "output": {
         "report_dir": "02-Reading/文献雷达/{yyyy}/{MM}",
         "filename": "{yyyy}-{MM}-{dd}",
+        "weekly_filename": "{week}",
+        "split_preprints": False,
+        "preprint_suffix": "-preprint",
         "index_file": "02-Reading/文献雷达/文献雷达索引.md",
         "index_mode": "append",
         "betternote_dir": "",
@@ -44,6 +58,7 @@ DEFAULTS: dict[str, Any] = {
         "topic_chart": True,
         "wordcloud": True,
     },
+    "translation": {"enabled": False, "provider": "google-web", "max_per_run": 200, "budget_s": 180},
     "images": {
         "enabled": False,
         "source": "auto",
@@ -56,7 +71,8 @@ DEFAULTS: dict[str, Any] = {
         "mode": "llm",
         "min_relevance": 0.6,
         "max_items": 60,
-        "include_types": ["research-article", "review"],
+        "keyword_weight": 0.5,
+        "include_types": ["research-article", "review", "perspective", "letter"],
         "keywords": [
             "positive selection",
             "genome-wide association",
@@ -64,6 +80,18 @@ DEFAULTS: dict[str, Any] = {
             "gene family expansion",
             "population genomics",
         ],
+    },
+    "weekly": {
+        "enabled": True,
+        "weekday": 4,
+        "max_items": 120,
+        "max_abstract_chars": 900,
+    },
+    "deepread": {
+        "enabled": True,
+        "max_items": 8,
+        "model": "",
+        "max_abstract_chars": 1800,
     },
     "llm": {
         "base_url": "https://api.deepseek.com/v1",
@@ -75,6 +103,7 @@ DEFAULTS: dict[str, Any] = {
         "max_retries": 2,
         "max_abstract_chars": 1200,
         "json_mode": True,
+        "pricing": {"input_per_million": 2.0, "output_per_million": 8.0},
     },
     "embedding": {
         "enabled": False,
@@ -152,6 +181,27 @@ def load_config(vault: Path | str, path: Path | None = None, require: bool = Tru
         raise ConfigError(f"无法读取 {config_path}：{exc}") from exc
     if not isinstance(loaded, dict):
         raise ConfigError(f"{config_path} 顶层必须是映射（mapping）")
+    local_path = config_path.parent / "config.local.yaml"
+    if local_path.exists():
+        try:
+            local = yaml.safe_load(local_path.read_text(encoding="utf-8")) or {}
+        except (yaml.YAMLError, OSError) as exc:
+            raise ConfigError(f"{local_path} 不是合法 YAML：{exc}") from exc
+        if isinstance(local, dict):
+            loaded = deep_merge(loaded, local)
+    profile_path = config_path.parent / "profile.yaml"
+    if profile_path.exists():
+        try:
+            profile = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+        except (yaml.YAMLError, OSError) as exc:
+            raise ConfigError(f"{profile_path} 不是合法 YAML：{exc}") from exc
+        if isinstance(profile, dict):
+            if profile.get("direction"):
+                loaded["direction"] = str(profile["direction"])
+            if isinstance(profile.get("keywords"), list) and profile["keywords"]:
+                loaded.setdefault("screening", {})["keywords"] = [
+                    str(word) for word in profile["keywords"]
+                ]
     return Config(deep_merge(DEFAULTS, loaded), vault_path, config_path)
 
 
@@ -160,6 +210,21 @@ def _require(journal: dict, key: str, source: str) -> Any:
     if value in (None, "", []):
         raise ConfigError(f"{source}: 缺少必填字段 {key!r}")
     return value
+
+
+def parse_weekday(value: object) -> int | None:
+    """Monday=0 .. Sunday=6; accepts 0..6, ``wed``/``wednesday`` and ``周三``."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 0 <= value <= 6 else None
+    text = collapse(str(value)).lower()
+    if text.isdigit():
+        number = int(text)
+        return number if 0 <= number <= 6 else None
+    return WEEKDAYS.get(text)
 
 
 def validate_journal(journal: dict, source: str = "<inline>") -> dict:
@@ -196,8 +261,8 @@ def validate_journal(journal: dict, source: str = "<inline>") -> dict:
     prefixes = journal.get("exclude_doi_prefixes")
     if prefixes not in (None, "") and not isinstance(prefixes, list):
         raise ConfigError(f"{source}（{name}）: exclude_doi_prefixes 必须是列表")
-    if journal.get("date_filter") not in (None, "", "online", "created"):
-        raise ConfigError(f"{source}（{name}）: date_filter 只能是 online 或 created")
+    if journal.get("date_filter") not in (None, "", "online", "created", "published"):
+        raise ConfigError(f"{source}（{name}）: date_filter 只能是 online、published 或 created")
     if journal.get("impact_factor") not in (None, ""):
         try:
             if float(journal["impact_factor"]) < 0:
@@ -211,9 +276,25 @@ def validate_journal(journal: dict, source: str = "<inline>") -> dict:
             raise ConfigError(f"{source}（{name}）: heading_level 必须是 3-6 的整数") from None
         if not 3 <= level <= 6:
             raise ConfigError(f"{source}（{name}）: heading_level 必须是 3-6 的整数")
+    cadence = str(journal.get("cadence") or "daily").strip().lower()
+    if cadence not in JOURNAL_CADENCES:
+        raise ConfigError(
+            f"{source}（{name}）: cadence 只能是 daily 或 weekly"
+        )
+    weekday = journal.get("weekday")
+    if cadence == "weekly":
+        weekday = parse_weekday(weekday)
+        if weekday is None:
+            raise ConfigError(
+                f"{source}（{name}）: cadence: weekly 需要 weekday（mon..sun 或 0..6）"
+            )
+    else:
+        weekday = None
     journal = dict(journal)
     journal["name"] = name
     journal["adapter"] = adapter
+    journal["cadence"] = cadence
+    journal["weekday"] = weekday
     journal.setdefault("surface", None)
     journal["slug"] = journal.get("slug") or slugify(name)
     return journal
@@ -291,6 +372,9 @@ language: {language}
 output:
   report_dir: "02-Reading/文献雷达/{{yyyy}}/{{MM}}"
   filename: "{{yyyy}}-{{MM}}-{{dd}}"
+  weekly_filename: "{{week}}"   # 周报文件名，如 2026-W45.md
+  split_preprints: false        # true = 期刊与预印本各写一个文件（预印本加 -preprint 后缀）
+  preprint_suffix: "-preprint"
   index_file: "02-Reading/文献雷达/文献雷达索引.md"
   index_mode: append            # append | dataview | none
   betternote_dir: ""            # 填 "02-Reading/4-betternotes" 则给置顶条目建 @ 笔记
@@ -308,6 +392,12 @@ report:
   topic_chart: true             # 今日主题分布（Mermaid 饼图 + 计数表）
   wordcloud: true               # 标题词云（SVG，存到 assets/）
 
+translation:
+  enabled: false               # 中文标题；仅发送公开标题，成功译文持久缓存
+  provider: google-web         # 公开网页接口，无需密钥；非官方 Cloud API
+  max_per_run: 200
+  budget_s: 180
+
 tags:
   extra: {{}}                   # 自定义标签，例如 {{"空间转录组": ["spatial transcriptomics"]}}
 
@@ -323,7 +413,8 @@ screening:
   mode: llm                     # llm | keyword
   min_relevance: 0.6
   max_items: 60                 # 单次喂模型上限，超出按日期倒序截断并标注
-  include_types: [research-article, review]
+  keyword_weight: 0.5           # 相关性里「关键词命中」的权重（0=只看模型，1=只看关键词）
+  include_types: [research-article, review, perspective, letter]
   keywords:                     # 关键词兜底必须用英文（匹配英文摘要）
     - positive selection
     - genome-wide association
@@ -345,6 +436,21 @@ llm:
   max_retries: 2
   max_abstract_chars: 1200
   json_mode: true               # 模型不支持 response_format 时设为 false
+  pricing:                      # 仅用于估算用量成本（按官方价改，不影响调用）
+    input_per_million: 2.0
+    output_per_million: 8.0
+
+weekly:
+  enabled: true                 # 每周固定一天，把这一周合并成一份周报（含本周热点）
+  weekday: fri                  # 汇总日：周一..周日 / 0..6 / 周五
+  max_items: 120                # 送进热点归纳的论文上限
+  max_abstract_chars: 900
+
+deepread:
+  enabled: true                 # 给「与你最相关」的几篇写中文精读（标题/领域/解读/关键词）
+  max_items: 8                  # 单次精读篇数上限；0 = 关闭
+  model: ""                     # 留空沿用 llm.model
+  max_abstract_chars: 1800
 
 embedding:
   enabled: false                # 需要 pip install "litradar[embed]"
@@ -375,6 +481,20 @@ SAMPLE_JOURNALS: tuple[dict[str, Any], ...] = (
         "issn": "0028-0836",
         "impact_factor": 48.5,
         "heading_level": 3,
+        "cadence": "weekly",
+        "weekday": 3,               # 周四出刊（周三上线）
+    },
+    {
+        "name": "Cell",
+        "adapter": "rss",
+        "feed": "https://www.cell.com/cell/current.rss",
+        "surface": "Current Issue",
+        "issn": "0092-8674",
+        "impact_factor": 45.5,
+        "heading_level": 3,
+        "cadence": "weekly",
+        "weekday": 3,               # 隔周周四出刊（按每周四算）
+        "fallback": ["crossref"],   # Cell 对部分客户端 TLS 握手失败，降级为仅元数据
     },
     {
         "name": "Science",
@@ -384,6 +504,37 @@ SAMPLE_JOURNALS: tuple[dict[str, Any], ...] = (
         "issn": "0036-8075",
         "impact_factor": 44.7,
         "heading_level": 3,
+        "cadence": "weekly",
+        "weekday": 3,               # 周四出刊
+        "fallback": ["crossref"],   # 官网 RSS 403 时降级为仅元数据
+        "date_filter": "published", # AAAS 记录可能只有纸刊日期，避免在线日期过滤漏收
+    },
+    {
+        "name": "Nature Sustainability",
+        "adapter": "rss",
+        "feed": "https://www.nature.com/natsustain.rss",
+        "surface": "Latest Research",
+        "issn": "2398-9629",
+        "impact_factor": 25.7,
+        "heading_level": 3,
+    },
+    {
+        "name": "Nature Climate Change",
+        "adapter": "rss",
+        "feed": "https://www.nature.com/nclimate.rss",
+        "surface": "Latest Research",
+        "issn": "1758-678X",
+        "impact_factor": 29.6,
+        "heading_level": 3,
+    },
+    {
+        "name": "Nature Computational Science",
+        "adapter": "rss",
+        "feed": "https://www.nature.com/natcomputsci.rss",
+        "surface": "Latest Research",
+        "issn": "2662-8457",
+        "impact_factor": 12.0,
+        "heading_level": 4,
     },
     {
         "name": "Nature Methods",
@@ -465,6 +616,10 @@ SAMPLE_JOURNALS: tuple[dict[str, Any], ...] = (
         "issn": "2375-2548",
         "impact_factor": 12.5,
         "heading_level": 4,
+        "cadence": "weekly",
+        "weekday": 4,               # 周五出刊
+        "fallback": ["crossref"],   # 官网 RSS 403 时降级为仅元数据
+        "date_filter": "published", # AAAS 记录可能只有纸刊日期，避免在线日期过滤漏收
     },
     {
         "name": "JAMIA",
@@ -525,6 +680,9 @@ SAMPLE_JOURNALS: tuple[dict[str, Any], ...] = (
 # "Patrick Stewart dies" out of the research digest while still auditing it.
 _NATURE_FAMILY = {
     "Nature",
+    "Nature Sustainability",
+    "Nature Climate Change",
+    "Nature Computational Science",
     "Nature Methods",
     "Nature Genetics",
     "Nature Biotechnology",

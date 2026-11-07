@@ -185,12 +185,10 @@ def save_scans(path: Path | str, scans: dict[str, dict]) -> None:
 def merge_scan_history(previous: dict | None, scan: dict) -> dict:
     """Fold today's scan into the persistent per-journal history."""
     previous = previous or {}
-    failures = 0 if scan.get("status") in ("ok", "metadata-only") else int(
-        previous.get("consecutive_failures") or 0
-    ) + 1
+    healthy = scan.get("status") in ("ok", "metadata-only", "off-cycle")
+    failures = 0 if healthy else int(previous.get("consecutive_failures") or 0) + 1
     entry = {
-        "last_ok_at": scan.get("scanned_at") if scan.get("status") in ("ok", "metadata-only")
-        else previous.get("last_ok_at"),
+        "last_ok_at": scan.get("scanned_at") if healthy else previous.get("last_ok_at"),
         "last_attempt_at": scan.get("scanned_at"),
         "status": scan.get("status"),
         "http": scan.get("http"),
@@ -199,6 +197,12 @@ def merge_scan_history(previous: dict | None, scan: dict) -> dict:
         "surface": scan.get("surface"),
         "url": scan.get("url"),
         "visibility": scan.get("visibility", "publisher"),
+        "cadence": scan.get("cadence") or "daily",
+        "weekday": scan.get("weekday"),
+        "volume": scan.get("volume"),
+        "issue": scan.get("issue"),
+        "issue_identifier": scan.get("issue_identifier"),
+        "cover_date": scan.get("cover_date"),
         "consecutive_failures": failures,
     }
     return entry

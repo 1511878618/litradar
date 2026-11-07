@@ -120,3 +120,66 @@ def test_cache_ignores_expired_entries():
         response = fetcher.get("https://example.org/exp")
         assert response.text == "two"
         assert response.from_cache is False
+
+
+def test_fetcher_survives_an_unwritable_cache_dir():
+    import os
+
+    from helpers import temp_dir
+
+    from litradar.fetcher import Fetcher
+
+    with temp_dir() as tmp:
+        locked = tmp / "locked"
+        locked.mkdir()
+        os.chmod(locked, 0o500)
+        try:
+            fetcher = Fetcher({}, cache_dir=locked / "cache")
+            assert fetcher.cache_dir is None
+            assert fetcher.no_cache is True
+        finally:
+            os.chmod(locked, 0o700)
+
+
+def test_tls_eof_uses_system_transport_but_certificate_errors_do_not():
+    import ssl
+    import urllib.error
+    with temp_dir() as tmp:
+        fetcher = _fetcher(tmp)
+        original = fetcher_module.urllib.request.urlopen
+        calls = []
+        fetcher._curl_request = lambda url, headers, timeout: (calls.append(url) or Response(url=url, status=200, text='ok'))
+        def eof(*args, **kwargs):
+            raise urllib.error.URLError(ssl.SSLEOFError('UNEXPECTED_EOF_WHILE_READING'))
+        fetcher_module.urllib.request.urlopen = eof
+        try:
+            assert fetcher._request('https://example.org/', {}).ok
+            assert calls == ['https://example.org/']
+            def certificate(*args, **kwargs):
+                raise urllib.error.URLError(ssl.SSLCertVerificationError('certificate verify failed'))
+            fetcher_module.urllib.request.urlopen = certificate
+            response = fetcher._request('https://example.org/', {})
+            assert not response.ok and len(calls) == 1
+        finally:
+            fetcher_module.urllib.request.urlopen = original
+
+
+def test_system_tls_transport_preserves_status_and_decodes_decompressed_body():
+    import subprocess
+    from pathlib import Path
+    with temp_dir() as tmp:
+        fetcher = _fetcher(tmp)
+        original = fetcher_module.subprocess.run
+        def run(args, **kwargs):
+            assert '--insecure' not in args and '-k' not in args
+            assert args[1] == '--disable'
+            assert args[args.index('--proto-redir') + 1] == '=https'
+            Path(args[args.index('--output') + 1]).write_text('{"ok": true}')
+            Path(args[args.index('--dump-header') + 1]).write_text('HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Type: application/json\r\n\r\n')
+            return subprocess.CompletedProcess(args, 0, stdout=b'200', stderr=b'')
+        fetcher_module.subprocess.run = run
+        try:
+            response = fetcher._curl_request('https://example.org/', {}, 4)
+            assert response.ok and response.text == '{"ok": true}'
+        finally:
+            fetcher_module.subprocess.run = original

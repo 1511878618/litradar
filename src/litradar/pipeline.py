@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from . import SCHEMA, __version__
+from . import deepread as deepread_stage
+from . import hotspots as hotspots_stage
 from .config import Config, ConfigError
 from .dedupe import dedupe, split_by_window
 from .events import Emitter
@@ -24,9 +26,12 @@ from .paths import Paths
 from .render import (
     ReportInput,
     coverage_of,
+    final_score,
+    is_preprint,
     load_scores,
     render_markdown,
     select_highlights,
+    subset_report,
     write_betternotes,
     write_index,
     write_report,
@@ -91,6 +96,8 @@ class RenderSummary:
     rejected: int = 0
     screen_rejected_all: bool = False
     images: int = 0
+    hotspots: int = 0
+    usage: dict = field(default_factory=dict)
     kind: str = "journal"
     skipped: bool = False
 
@@ -114,6 +121,8 @@ def _scan_failure(journal: dict, reason: str, status: str = "error") -> JournalS
         items_seen=0,
         reason=reason,
         scanned_at=iso(),
+        cadence=journal.get("cadence") or "daily",
+        weekday=journal.get("weekday"),
     )
 
 
@@ -158,6 +167,64 @@ def _fetch_one(ctx: Context, journal: dict, window: Window) -> tuple[list[Articl
         ctx.fetcher.deadline = None
 
 
+def _apply_cadence(
+    journal: dict, scan: JournalScan, items: list[Article], window: Window
+) -> None:
+    """Turn "0 items" into an honest answer for journals that only publish weekly.
+
+    Without this a weekly journal looks broken five days out of seven, and a real
+    miss on its publishing day looks like an ordinary quiet day.  Both cases are
+    named explicitly instead of being reported as "no new articles".
+    """
+    from .config import WEEKDAY_LABELS
+
+    if journal.get("cadence") != "weekly" or scan.status != "ok":
+        return
+    weekday = journal.get("weekday")
+    if not isinstance(weekday, int) or not 0 <= weekday <= 6:
+        return
+    label = WEEKDAY_LABELS[weekday]
+    # Adapters may hand back rows outside the window (the manual one does); only
+    # articles actually dated inside it count as "this issue exists".
+    if any(window.contains(article.online_date) for article in items):
+        return
+    if window.covers_weekday(weekday):
+        scan.reason = f"{label}更新，本轮 0 篇；用 `litradar journals test` 核对采集"
+    else:
+        scan.status = "off-cycle"
+        scan.reason = f"{label}更新"
+        scan.items_seen = 0
+
+
+def _enrich_scan(journal: dict, scan: JournalScan, items: list[Article]) -> None:
+    """Attach rhythm + issue metadata without making it a hard requirement.
+
+    RSS can expose the current issue at channel level; Crossref exposes volume and
+    issue per article.  Both are best-effort, so an absent value stays ``None``
+    and the panel renders an em dash instead of inventing an issue number.
+    """
+    scan.cadence = journal.get("cadence") or "daily"
+    scan.weekday = journal.get("weekday")
+
+    def most_common(key: str) -> str | None:
+        counts: dict[str, int] = {}
+        for article in items:
+            value = article.extra.get(key)
+            if value in (None, ""):
+                continue
+            text = str(value).strip()
+            if text:
+                counts[text] = counts.get(text, 0) + 1
+        if not counts:
+            return None
+        return max(counts, key=counts.get)
+
+    scan.volume = scan.volume or most_common("volume")
+    scan.issue = scan.issue or most_common("issue")
+    scan.issue_identifier = scan.issue_identifier or most_common("issue_identifier")
+    scan.cover_date = scan.cover_date or most_common("cover_date")
+
+
 def fetch_all(
     ctx: Context,
     window: Window,
@@ -165,6 +232,7 @@ def fetch_all(
     *,
     budget_s: float = 600,
     save_state: bool = True,
+    merge_existing: bool = False,
 ) -> FetchSummary:
     ctx.paths.ensure()
     deadline = time.monotonic() + budget_s
@@ -183,6 +251,8 @@ def fetch_all(
         ctx.emitter.emit("journal_start", journal=journal["name"], adapter=journal["adapter"])
         stopwatch = Stopwatch()
         items, scan = _fetch_one(ctx, journal, window)
+        _apply_cadence(journal, scan, items, window)
+        _enrich_scan(journal, scan, items)
         summary.scans.append(scan)
         collected.extend(items)
         ctx.logger.journal(
@@ -204,8 +274,35 @@ def fetch_all(
             history[journal["name"]] = merge_scan_history(history.get(journal["name"]), scan.to_dict())
             save_scans(ctx.paths.scans_file, history)
 
+    previous = read_json(ctx.paths.store_file(window.run_id), default={}) if merge_existing else {}
+    if previous:
+        previous_items = [Article.from_dict(row) for row in previous.get("items", [])]
+        fresh = {a.id: a for a in collected}
+        for old in previous_items:
+            if old.id in fresh:
+                fresh[old.id].extra = {**old.extra, **fresh[old.id].extra}
+                fresh[old.id].first_seen_at = old.first_seen_at
+                if fresh[old.id].online_date is None and old.online_date:
+                    fresh[old.id].online_date = old.online_date
+                    fresh[old.id].date_source = old.date_source
+                if not fresh[old.id].abstract_raw:
+                    fresh[old.id].abstract_raw = old.abstract_raw
+                    fresh[old.id].abstract_source = old.abstract_source
+        collected = list({**{a.id: a for a in previous_items}, **fresh}.values())
+        scans_by_name = {row["journal"]: JournalScan.from_dict(row) for row in previous.get("journals", [])}
+        for scan in summary.scans:
+            old = scans_by_name.get(scan.journal)
+            if old and old.healthy and not scan.healthy:
+                old.reason = f"保留上次可用结果；本次重试失败：{scan.reason}"
+            else:
+                scans_by_name[scan.journal] = scan
+        summary.scans = list(scans_by_name.values())
     seen = load_seen(ctx.paths.seen_file) if save_state else {}
-    include_types = ctx.config.get("screening.include_types") or ["research-article", "review"]
+    # Re-rendering a batch must keep its original new items new within that batch.
+    if previous:
+        seen = {key: value for key, value in seen.items()
+                if key not in {row["id"] for row in previous.get("items", []) if not row.get("already_seen")}}
+    include_types = ctx.config.get("screening.include_types") or ["research-article", "review", "perspective", "letter"]
     buckets = split_by_window(collected, window, include_types)
     result = dedupe(buckets["in_window"], seen)
     summary.new_items = result.new
@@ -232,6 +329,11 @@ def fetch_all(
         "out_of_window": [article.to_dict() for article in buckets["out_of_window"]],
         "excluded_type": [article.to_dict() for article in buckets["excluded_type"]],
     }
+    if previous:
+        current_ids = {row["id"] for key in ("items", "date_unverified", "out_of_window", "excluded_type") for row in store[key]}
+        for key in ("date_unverified", "out_of_window", "excluded_type"):
+            retained = [row for row in previous.get(key, []) if row["id"] not in current_ids]
+            store[key] = retained + store[key]
     if save_state:
         path = ctx.paths.store_file(window.run_id)
         atomic_write_json(path, store)
@@ -251,6 +353,7 @@ class LoadedStore:
     out_of_window: list[Article]
     excluded_type: list[Article]
     scan_at: str
+    missing_days: list[str] = field(default_factory=list)
 
 
 def load_store(paths: Paths, run_id: str) -> LoadedStore:
@@ -281,6 +384,7 @@ def load_store(paths: Paths, run_id: str) -> LoadedStore:
         out_of_window=[Article.from_dict(entry) for entry in payload.get("out_of_window") or []],
         excluded_type=[Article.from_dict(entry) for entry in payload.get("excluded_type") or []],
         scan_at=str(payload.get("scan_at") or iso()),
+        missing_days=[str(day) for day in payload.get("missing_days") or []],
     )
 
 
@@ -291,6 +395,7 @@ def _screen(
     use_llm: bool,
     refresh: bool,
     screen_path: Path | None = None,
+    usage: dict | None = None,
 ) -> tuple[list[dict], str, str | None, dict[str, Any] | None]:
     """Return (raw_results, label, note, raw_payload) for one daily report."""
     from . import llm
@@ -335,7 +440,7 @@ def _screen(
         max_abstract_chars=int(ctx.config.get("llm.max_abstract_chars", 1200) or 1200),
     )
     try:
-        payload = llm.chat_json(ctx.config, messages, logger=ctx.logger)
+        payload = llm.chat_json(ctx.config, messages, logger=ctx.logger, usage=usage)
     except llm.LlmError as exc:
         keywords = list(ctx.config.get("screening.keywords", []))
         return (
@@ -358,6 +463,61 @@ def _screen(
     return results, f"llm-v1（{model}）", note, screen_payload
 
 
+def assemble_weekly(ctx: Context, window: Window) -> Path:
+    """Merge the week's daily stores into ``store/<week>.json`` — no network.
+
+    A weekly report must contain everything the daily runs reported that week, so
+    it is built from the dailies instead of re-fetching: no risk of re-reporting
+    or missing a day the machine was asleep (days without a store are listed).
+    """
+    ctx.paths.ensure()
+    merged: dict[str, Article] = {}
+    scans: dict[str, JournalScan] = {}
+    missing: list[str] = []
+    scan_at = ""
+    for offset in range(window.days):
+        day = window.start + timedelta(days=offset)
+        path = ctx.paths.store_file(day.isoformat())
+        payload = read_json(path, default=None) if path.exists() else None
+        if not isinstance(payload, dict):
+            missing.append(day.isoformat())
+            continue
+        scan_at = max(scan_at, str(payload.get("scan_at") or ""))
+        # ``already_seen`` only means "a daily run already printed it this week";
+        # the weekly recap wants it too.
+        for entry in payload.get("items") or []:
+            if not isinstance(entry, dict):
+                continue
+            article = Article.from_dict(entry)
+            merged.setdefault(article.id, article)
+        for raw in payload.get("journals") or []:
+            if isinstance(raw, dict):
+                scan = JournalScan.from_dict(raw)
+                scans[scan.journal] = scan
+
+    if missing:
+        ctx.logger.warn(
+            f"{window.week_label} 有 {len(missing)} 天没有抓取记录：{'、'.join(missing)}"
+        )
+    store = {
+        "schema": SCHEMA,
+        "run_id": window.run_id,
+        "engine": __version__,
+        "scan_at": scan_at or iso(),
+        "window": window.to_dict(),
+        "journals": [scan.to_dict() for scan in scans.values()],
+        "items": [article.to_dict() for article in merged.values()],
+        "date_unverified": [],
+        "out_of_window": [],
+        "excluded_type": [],
+        "missing_days": missing,
+        "assembled_from": "daily",
+    }
+    path = ctx.paths.store_file(window.run_id)
+    atomic_write_json(path, store)
+    return path
+
+
 def render_report(
     ctx: Context,
     run_id: str,
@@ -368,6 +528,7 @@ def render_report(
     commit: bool = True,
 ) -> RenderSummary:
     from . import __version__ as version
+    from . import llm
     from .wordcloud import write_wordcloud
 
     store = load_store(ctx.paths, run_id)
@@ -408,8 +569,9 @@ def render_report(
             screening="-",
         )
 
+    usage = llm.new_usage()
     results_raw, label, note, payload = _screen(
-        ctx, store, use_llm=use_llm, refresh=refresh, screen_path=screen_path
+        ctx, store, use_llm=use_llm, refresh=refresh, screen_path=screen_path, usage=usage
     )
 
     allowed = default_hosts(store.items, [])
@@ -440,18 +602,98 @@ def render_report(
         journals=journals_by_name,
         scan_history=history,
         engine_version=version,
-        kind="daily",
+        kind="weekly" if store.window.kind in ("weekly", "week_to_date") else "daily",
+        weekly_missing=list(store.missing_days),
+        usage=usage,
     )
 
-    if commit and bool(ctx.config.get("report.wordcloud", True)) and store.items:
-        data.wordcloud_path = write_wordcloud(
-            ctx.paths.report_file(store.window).parent,
-            store.run_id,
-            "daily",
-            store.items,
-        )
-
+    from .library import apply_feedback, version_links
+    apply_feedback(ctx.paths, data.items)
+    if commit:
+        version_links(ctx.paths, data.items)
     highlights = select_highlights(data)
+    deepread_payload = None
+    deepread_file = ctx.paths.run_dir(store.run_id) / "deepread.json"
+    # Only annotate when this run actually talked to the model (or a previous
+    # annotation exists): re-rendering from a cached screen.json must stay offline.
+    deepread_ready = (not screen_existed or refresh) or deepread_file.exists()
+    if use_llm and deepread_ready and deepread_stage.enabled(ctx.config):
+        targets = deepread_stage.limit_articles(highlights, ctx.config)
+        if targets:
+            stored = read_json(deepread_file, default=None) if deepread_file.exists() and not refresh else None
+            if isinstance(stored, dict):
+                items = [
+                    deepread_stage.DeepRead.from_dict(row)
+                    for row in stored.get("papers") or []
+                    if isinstance(row, dict)
+                ]
+                data.deepread = {item.id: item for item in items if item.id}
+                data.deepread_label = (
+                    f"{stored.get('screening') or 'deepread-v1'}"
+                    f"（{stored.get('model') or deepread_stage.model_name(ctx.config)}）"
+                )
+            else:
+                ctx.emitter.emit("progress", stage="deepread", done=0, total=len(targets))
+                try:
+                    annotations, deepread_data, rejected, notes, read_label = deepread_stage.annotate(
+                        ctx.config, ctx.config.direction, targets, logger=ctx.logger, usage=usage
+                    )
+                except llm.LlmError as exc:
+                    data.deepread_note = f"精读跳过：{exc}；已退回英文版式，日报照常生成"
+                except Exception as exc:  # noqa: BLE001 - never let a nicety break the report
+                    data.deepread_note = f"精读跳过：{type(exc).__name__}: {exc}；已退回英文版式"
+                else:
+                    data.deepread = annotations
+                    data.deepread_label = read_label
+                    deepread_payload = deepread_data
+                    for item_id, reason in rejected:
+                        validation.notes.append(f"精读被拒（{item_id}）：{reason}")
+                    validation.notes.extend(f"精读：{note}" for note in notes)
+                    ctx.emitter.emit("progress", stage="deepread", done=len(targets), total=len(targets))
+
+    hotspots_payload = None
+    hotspots_file = ctx.paths.run_dir(store.run_id) / "hotspots.json"
+    if (
+        data.kind == "weekly"
+        and use_llm
+        and hotspots_stage.enabled(ctx.config)
+        and store.items
+        and ((not screen_existed or refresh) or hotspots_file.exists())
+    ):
+        targets = sorted(
+            store.items, key=lambda article: article.online_date or date.min, reverse=True
+        )[: hotspots_stage.max_items(ctx.config)]
+        stored = (
+            read_json(hotspots_file, default=None)
+            if hotspots_file.exists() and not refresh
+            else None
+        )
+        if isinstance(stored, dict):
+            data.hotspots = [
+                hotspots_stage.Hotspot.from_dict(row)
+                for row in stored.get("hotspots") or []
+                if isinstance(row, dict)
+            ]
+            data.hotspots_label = (
+                f"{stored.get('screening') or 'hotspots-v1'}"
+                f"（{stored.get('model') or hotspots_stage.model_name(ctx.config)}）"
+            )
+        else:
+            try:
+                found, hotspots_data, rejected, notes, hot_label = hotspots_stage.annotate(
+                    ctx.config, ctx.config.direction, targets, logger=ctx.logger, usage=usage
+                )
+            except llm.LlmError as exc:
+                data.hotspots_note = f"热点归纳跳过：{exc}"
+            except Exception as exc:  # noqa: BLE001
+                data.hotspots_note = f"热点归纳跳过：{type(exc).__name__}: {exc}"
+            else:
+                data.hotspots = found
+                data.hotspots_label = hot_label
+                hotspots_payload = hotspots_data
+                for title, reason in rejected:
+                    validation.notes.append(f"热点被拒（{title}）：{reason}")
+                validation.notes.extend(f"热点：{note}" for note in notes)
     image_stats = None
     if commit and images_enabled(ctx.config):
         scope = str(ctx.config.get("images.scope", "highlights") or "highlights")
@@ -462,8 +704,63 @@ def render_report(
             targets,
             journals_by_name,
         )
-    markdown, highlights = render_markdown(data, highlights=highlights)
+    usage_file = ctx.paths.run_dir(store.run_id) / "usage.json"
+    if not usage.get("calls") and usage_file.exists():
+        # Re-rendering from cache still shows what the original run cost.
+        stored_usage = read_json(usage_file, default=None)
+        if isinstance(stored_usage, dict) and stored_usage.get("calls"):
+            data.usage = stored_usage
+    from .translation import translate_titles
+
+    data.title_translations, data.translation_note = translate_titles(
+        ctx.config, ctx.paths, data.items,
+        existing={key: deep.title_zh for key, deep in data.deepread.items() if deep.title_zh},
+        commit=commit, logger=ctx.logger,
+    )
+    if commit:
+        atomic_write_json(ctx.paths.run_dir(store.run_id) / "presentation.json", {
+            "titles": data.title_translations,
+            "extras": {a.id: {**a.extra, "highlight": a.id in {h.id for h in highlights},
+                                "rank_score": final_score(a, data.results.get(a.id), data.scores, data.config)} for a in data.items},
+            "summaries": {key: result.summary_zh for key, result in data.results.items() if result.summary_zh},
+            "why": {key: result.why for key, result in data.results.items() if result.why},
+        })
+    split = bool(ctx.config.get("output.split_preprints", False)) and any(
+        is_preprint(article) for article in store.items
+    )
+    main_hl = pre_hl = []
+    if split:
+        main_data = subset_report(data, want_preprint=False, variant="main")
+        pre_data = subset_report(data, want_preprint=True, variant="preprint")
+        if commit and bool(ctx.config.get("report.wordcloud", True)):
+            for part in (main_data, pre_data):
+                part.wordcloud_path = write_wordcloud(
+                    ctx.paths.report_file(store.window, part.variant).parent,
+                    store.run_id, f"{data.kind}-{part.variant}", part.items,
+                )
+        main_data.sibling_link = ctx.paths.report_file(store.window, "preprint").stem
+        pre_data.sibling_link = ctx.paths.report_file(store.window, "main").stem
+        main_hl = [article for article in highlights if not is_preprint(article)]
+        pre_hl = [article for article in highlights if is_preprint(article)]
+        main_md, main_hl = render_markdown(main_data, highlights=main_hl)
+        pre_md, pre_hl = render_markdown(pre_data, highlights=pre_hl)
+        data = main_data
+        markdown = main_md
+        highlights = main_hl + pre_hl
+    else:
+        if commit and bool(ctx.config.get("report.wordcloud", True)) and data.items:
+            data.wordcloud_path = write_wordcloud(
+                ctx.paths.report_file(store.window).parent, store.run_id, data.kind, data.items,
+            )
+        markdown, highlights = render_markdown(data, highlights=highlights)
     coverage = coverage_of(store.scans)
+    if usage.get("calls"):
+        ctx.logger.info(
+            f"模型用量：{usage['calls']} 次调用，输入 {usage['prompt_tokens']} tokens，"
+            f"输出 {usage['completion_tokens']} tokens，"
+            f"约 ¥{llm.cost_cny(usage, ctx.config):.4f}"
+            + ("（含估算）" if usage.get("estimated") else "")
+        )
 
     summary = RenderSummary(
         run_id=store.run_id,
@@ -474,8 +771,12 @@ def render_report(
         rejected=len(validation.rejected),
         screen_rejected_all=bool(store.items) and not validation.results,
         images=image_stats.attached if image_stats else 0,
+        hotspots=len(data.hotspots),
+        usage=usage,
     )
     report_path = write_report(ctx.paths, data, markdown)
+    if split:
+        write_report(ctx.paths, pre_data, pre_md)
     summary.report_path = report_path
 
     if commit:
@@ -484,7 +785,23 @@ def render_report(
         # refresh). An existing screen.json is an input we must not rewrite.
         if payload is not None and (refresh or not screen_existed):
             atomic_write_json(screen_file, payload)
-        write_index(ctx.paths, data, coverage, len(highlights))
+        if deepread_payload is not None and (refresh or not deepread_file.exists()):
+            atomic_write_json(deepread_file, deepread_payload)
+        if hotspots_payload is not None and (refresh or not hotspots_file.exists()):
+            atomic_write_json(hotspots_file, hotspots_payload)
+        if usage.get("calls"):
+            usage_payload = {
+                **usage,
+                "model": str(ctx.config.get("llm.model", "")),
+                "cost_cny": float(llm.cost_cny(usage, ctx.config)),
+                "recorded_at": iso(),
+            }
+            atomic_write_json(usage_file, usage_payload)
+        if split:
+            write_index(ctx.paths, main_data, coverage_of(main_data.scans), len(main_hl))
+            write_index(ctx.paths, pre_data, coverage_of(pre_data.scans), len(pre_hl))
+        else:
+            write_index(ctx.paths, data, coverage, len(highlights))
         write_betternotes(ctx.paths, highlights, validation.results, ctx.config)
         commit_seen(ctx.paths, store.items, store.run_id, store.scan_at)
         save_scans(ctx.paths.scans_file, history)

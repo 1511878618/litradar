@@ -19,7 +19,7 @@ from .base import Adapter, failed, ok
 API = "https://api.crossref.org/works"
 SELECT = (
     "DOI,title,URL,type,published-online,published-print,issued,created,"
-    "abstract,author,container-title,page,volume,issue"
+    "abstract,author,container-title,page,volume,issue,relation"
 )
 TYPE_MAP = {
     "journal-article": "research-article",
@@ -28,6 +28,14 @@ TYPE_MAP = {
     "book-chapter": "other",
     "dataset": "other",
     "component": "other",
+}
+TYPE_LABELS = {
+    "journal-article": "Journal Article",
+    "posted-content": "Preprint",
+    "proceedings-article": "Proceedings Article",
+    "book-chapter": "Book Chapter",
+    "dataset": "Dataset",
+    "component": "Component",
 }
 _JATS_RE = re.compile(r"<jats:[^>]+>")
 
@@ -73,6 +81,11 @@ class CrossrefAdapter(Adapter):
                 f"from-created-date:{window.start.isoformat()},"
                 f"until-created-date:{window.end.isoformat()}"
             )
+        elif date_filter == "published":
+            window_filter = (
+                f"from-pub-date:{window.start.isoformat()},"
+                f"until-pub-date:{window.end.isoformat()}"
+            )
         else:
             window_filter = (
                 f"from-online-pub-date:{window.start.isoformat()},"
@@ -80,7 +93,7 @@ class CrossrefAdapter(Adapter):
             )
         params = {
             "filter": f"issn:{journal['issn']},{window_filter}",
-            "rows": str(int(journal.get("rows") or 200)),
+            "rows": str(max(1, min(1000, int(journal.get("rows") or 200)))),
             "select": SELECT,
         }
         if journal.get("mailto"):
@@ -98,11 +111,35 @@ class CrossrefAdapter(Adapter):
                 journal, "error", "Crossref 返回结构异常（缺少 message.items）", url=url
             )
 
+        entries = list(message["items"])
+        total = int(message.get("total-results") or len(entries))
+        offset = len(entries)
+        page_limit = max(1, min(50, int(journal.get("max_pages", 20))))
+        page_note = ""
+        for _page in range(1, page_limit):
+            if offset >= total or offset > 10000:
+                break
+            params["offset"] = str(offset)
+            page_url = f"{API}?{urllib.parse.urlencode(params)}"
+            more, page_response = fetcher.get_json(page_url, journal.get("headers"))
+            batch = (more or {}).get("message", {}).get("items") if isinstance(more, dict) else None
+            if not isinstance(batch, list) or not batch:
+                page_note = f"；分页未完成（已读取 {offset}/{total} 条），请重试"
+                break
+            entries.extend(batch)
+            offset += len(batch)
+        if offset < total and not page_note:
+            page_note = f"；达到分页上限（{offset}/{total} 条），请缩短窗口或提高 max_pages"
         items: list[Article] = []
-        for entry in message["items"]:
+        emitted = set()
+        for entry in entries:
             if not isinstance(entry, dict):
                 continue
             doi = entry.get("DOI")
+            if doi and str(doi).lower() in emitted:
+                continue
+            if doi:
+                emitted.add(str(doi).lower())
             titles = entry.get("title") or []
             title = clean_title(titles[0], max_chars=400) if titles else ""
             if not title:
@@ -114,6 +151,15 @@ class CrossrefAdapter(Adapter):
                     or _date_parts(entry, "published-print")
                     or _date_parts(entry, "issued")
                 )
+            elif date_filter == "published":
+                # Crossref's issued is the earliest online/print publication date,
+                # matching the broad publication filter. Never use deposit time.
+                candidates = [d for d in (
+                    _date_parts(entry, "published-online"),
+                    _date_parts(entry, "published-print"),
+                    _date_parts(entry, "issued"),
+                ) if d is not None]
+                online_date = min(candidates) if candidates else None
             else:
                 online_date = (
                     _date_parts(entry, "published-online")
@@ -136,9 +182,17 @@ class CrossrefAdapter(Adapter):
                     abstract_raw=clean_abstract(_JATS_RE.sub(" ", entry.get("abstract") or ""), max_chars=2000),
                     authors=_authors(entry),
                     content_type=content_type,
+                    article_type=TYPE_LABELS.get(
+                        str(entry.get("type") or ""),
+                        str(entry.get("type") or "Journal Article").replace("-", " ").title(),
+                    ),
                     extra={
                         "crossref_type": entry.get("type"),
-                        "date_basis": "created" if date_filter == "created" else "online",
+                        "relations": entry.get("relation") or {},
+                        "date_basis": date_filter if date_filter in ("created", "published") else "online",
+                        "volume": entry.get("volume"),
+                        "issue": entry.get("issue"),
+                        "page": entry.get("page"),
                     },
                 )
             )
@@ -151,5 +205,5 @@ class CrossrefAdapter(Adapter):
             url=url,
             status="metadata-only",
             visibility="metadata-only",
-            reason="Crossref 仅提供元数据，摘要多为空",
+            reason="Crossref 仅提供元数据，摘要多为空" + page_note,
         )

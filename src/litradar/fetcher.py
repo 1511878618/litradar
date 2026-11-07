@@ -11,6 +11,8 @@ import hashlib
 import json
 import socket
 import ssl
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -88,7 +90,12 @@ class Fetcher:
         self.deadline: float | None = None
         self._last_request: dict[str, float] = {}
         if self.cache_dir is not None:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # Read-only vault / TCC: keep working, just without a disk cache.
+                self.cache_dir = None
+                self.no_cache = True
 
     # ---- public -----------------------------------------------------------
     def get(self, url: str, headers: dict[str, str] | None = None, *, cache_ttl: float | None = None) -> Response:
@@ -211,16 +218,64 @@ class Fetcher:
             if isinstance(reason, socket.timeout):
                 return Response(url=url, error=f"请求超时（{timeout:g}s）")
             if isinstance(reason, ssl.SSLError):
+                if self._tls_eof(reason):
+                    return self._curl_request(url, headers, timeout)
                 return Response(url=url, error=f"TLS 握手失败：{reason}")
             text = str(reason)
             if "Name or service not known" in text or "nodename nor servname" in text:
                 return Response(url=url, error="域名解析失败（检查网络或代理）")
             return Response(url=url, error=f"连接失败：{text}")
+        except ssl.SSLError as exc:
+            if self._tls_eof(exc):
+                return self._curl_request(url, headers, timeout)
+            return Response(url=url, error=f"TLS 握手失败：{exc}")
         except (OSError, ValueError) as exc:
             return Response(url=url, error=f"请求失败：{exc}")
 
         text = self._decode(body, response_headers)
         return Response(url=url, status=status, text=text, headers=response_headers)
+
+    @staticmethod
+    def _tls_eof(error: ssl.SSLError) -> bool:
+        return isinstance(error, ssl.SSLEOFError) or "UNEXPECTED_EOF_WHILE_READING" in str(error)
+
+    def _curl_request(self, url: str, headers: dict[str, str], timeout: float) -> Response:
+        """Retry TLS EOF with the system TLS stack; certificate validation stays on."""
+        if urllib.parse.urlsplit(url).scheme != "https":
+            return Response(url=url, error="TLS 回退仅支持 HTTPS")
+        budget = self._timeout() if self.deadline is not None else timeout
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            return Response(url=url, error="TLS 重试前已达到抓取时间上限")
+        with tempfile.TemporaryDirectory(prefix="litradar-http-") as temp:
+            body_path, header_path = Path(temp) / "body", Path(temp) / "headers"
+            args = ["curl", "--disable", "--silent", "--show-error", "--location", "--max-redirs", "5",
+                    "--proto", "=https", "--proto-redir", "=https", "--compressed",
+                    "--connect-timeout", str(min(10, budget)), "--max-time", str(budget),
+                    "--output", str(body_path), "--dump-header", str(header_path),
+                    "--write-out", "%{http_code}"]
+            for name, value in headers.items():
+                if name.lower() != "accept-encoding":
+                    args.extend(["--header", f"{name}: {value}"])
+            args.extend(["--url", url])
+            try:
+                result = subprocess.run(args, capture_output=True, timeout=budget + 1, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return Response(url=url, error=f"TLS 连接中断，系统 TLS 重试失败：{type(exc).__name__}")
+            if result.returncode:
+                detail = result.stderr.decode("utf-8", errors="replace")[:250]
+                return Response(url=url, error=f"TLS 连接中断，系统 TLS 重试失败：{detail}")
+            try:
+                status = int(result.stdout.decode().strip())
+                raw_headers = header_path.read_text(errors="replace").replace("\r\n", "\n")
+                block = raw_headers.strip().split("\n\n")[-1]
+                response_headers = {key.lower().strip(): value.strip() for line in block.splitlines()[1:]
+                                    if ":" in line for key, value in [line.split(":", 1)]}
+                # curl --compressed has already decompressed the response.
+                response_headers.pop("content-encoding", None)
+                text = self._decode(body_path.read_bytes(), response_headers)
+                return Response(url=url, status=status, text=text, headers=response_headers)
+            except (OSError, ValueError) as exc:
+                return Response(url=url, error=f"系统 TLS 响应解析失败：{exc}")
 
     @staticmethod
     def _decode(body: bytes, headers: dict[str, str]) -> str:

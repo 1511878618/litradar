@@ -76,3 +76,22 @@ def test_extract_results_variants():
 def test_keyword_screen_serialises_to_json():
     results = keyword_screen([sample_article()], ["positive selection"])
     assert json.loads(json.dumps(results))[0]["id"]
+
+
+def test_keyword_overlap_scores_coverage():
+    from litradar.screening import keyword_overlap
+
+    profile = ["EHR foundation models", "polygenic risk score", "Mamba", "UK Biobank"]
+    assert keyword_overlap([], profile) is None
+    assert keyword_overlap(["unrelated"], profile) == 0.0
+    # one hit out of min(3, 4) = 1/3
+    assert abs(keyword_overlap(["EHR foundation models"], profile) - 1 / 3) < 1e-9
+    # substring matching both ways
+    assert keyword_overlap(["foundation models for EHR"], profile) > 0
+    assert keyword_overlap(["polygenic risk score", "Mamba", "UK Biobank"], profile) == 1.0
+
+
+def test_keyword_overlap_uses_profile_length_when_short():
+    from litradar.screening import keyword_overlap
+
+    assert keyword_overlap(["alpha"], ["alpha", "beta"]) == 0.5

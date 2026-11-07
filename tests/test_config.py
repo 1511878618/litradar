@@ -109,7 +109,7 @@ def test_skeleton_is_idempotent():
         config_path.write_text(config_path.read_text(encoding="utf-8") + "\n# edited\n", encoding="utf-8")
         write_skeleton(tmp)
         assert "# edited" in config_path.read_text(encoding="utf-8")
-        assert len(list((tmp / ".litradar" / "journals").glob("*.yaml"))) == 17
+        assert len(list((tmp / ".litradar" / "journals").glob("*.yaml"))) == 21
 
 
 def test_skeleton_writes_readmes():
@@ -152,7 +152,7 @@ def test_biorxiv_server_validation():
 def test_metadata_field_validation():
     base = {"name": "X", "adapter": "rss", "feed": "https://example.org/feed"}
     for bad in ({"impact_factor": "high"}, {"impact_factor": -1}, {"heading_level": 9},
-                {"heading_level": "x"}, {"date_filter": "published"}):
+                {"heading_level": "x"}, {"date_filter": "indexed"}):
         try:
             validate_journal({**base, **bad}, "test")
         except ConfigError:
@@ -165,3 +165,62 @@ def test_metadata_fields_roundtrip():
                               "impact_factor": 48.5, "heading_level": 3, "preprint": False}, "t")
     assert entry["impact_factor"] == 48.5
     assert entry["heading_level"] == 3
+
+
+def test_weekly_cadence_requires_a_weekday():
+    base = {"name": "Weekly", "adapter": "rss", "feed": "https://example.org/feed"}
+    try:
+        validate_journal({**base, "cadence": "weekly"}, "test")
+    except ConfigError as exc:
+        assert "weekday" in str(exc)
+    else:
+        raise AssertionError("expected ConfigError")
+
+
+def test_weekly_cadence_accepts_names_and_numbers():
+    base = {"name": "Weekly", "adapter": "rss", "feed": "https://example.org/feed"}
+    for value, expected in (("wed", 2), ("周三", 2), (2, 2), ("2", 2), ("Sunday", 6)):
+        entry = validate_journal({**base, "cadence": "weekly", "weekday": value}, "test")
+        assert entry["cadence"] == "weekly"
+        assert entry["weekday"] == expected
+
+
+def test_cadence_defaults_to_daily_and_rejects_unknown_values():
+    base = {"name": "Daily", "adapter": "rss", "feed": "https://example.org/feed"}
+    assert validate_journal(base, "test")["cadence"] == "daily"
+    assert validate_journal(base, "test")["weekday"] is None
+    for bad in ({"cadence": "monthly"}, {"cadence": "weekly", "weekday": 9},
+                {"cadence": "weekly", "weekday": "someday"}):
+        try:
+            validate_journal({**base, **bad}, "test")
+        except ConfigError:
+            continue
+        raise AssertionError(f"expected ConfigError for {bad}")
+
+
+def test_config_local_overlay_wins_over_config_yaml():
+    from litradar.config import load_config
+
+    with temp_dir() as tmp:
+        (tmp / ".litradar").mkdir(parents=True, exist_ok=True)
+        (tmp / ".litradar" / "config.yaml").write_text(
+            f'version: 1\nvault: "{tmp}"\ndirection: "原方向"\n'
+            "screening:\n  keyword_weight: 0.5\n",
+            encoding="utf-8",
+        )
+        (tmp / ".litradar" / "config.local.yaml").write_text(
+            "direction: 覆盖方向\nscreening:\n  keyword_weight: 0.9\n",
+            encoding="utf-8",
+        )
+        loaded = load_config(tmp)
+        assert loaded.direction == "覆盖方向"
+        assert loaded.get("screening.keyword_weight") == 0.9
+
+
+def test_science_defaults_have_metadata_fallback_with_publication_dates():
+    from litradar.config import SAMPLE_JOURNALS
+    for name in ("Science", "Science Advances"):
+        journal = next(j for j in SAMPLE_JOURNALS if j["name"] == name)
+        assert journal["fallback"] == ["crossref"]
+        assert journal["date_filter"] == "published"
+        validate_journal(journal, "sample")

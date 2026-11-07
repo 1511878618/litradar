@@ -267,7 +267,7 @@ def test_abstract_is_truncated_by_config():
     data.items[0].abstract_raw = "word " * 800
     assert abstract_limit(data.config) == 200
     markdown, _ = render_markdown(data)
-    line = next(line for line in markdown.splitlines() if line.startswith("word "))
+    line = next(line.removeprefix("> **摘要** · ") for line in markdown.splitlines() if line.startswith("> **摘要** · word "))
     assert line.endswith("…")
     assert len(line) <= 210
 
@@ -456,3 +456,74 @@ def test_index_keeps_one_row_per_day():
     older = "- [[2026-10-29]] · 2 篇（置顶 0） · 覆盖 complete · 2026-10-30"
     text = update_index(text, older, "2026-10-29")
     assert text.index("[[2026-10-30]]") < text.index("[[2026-10-29]]")
+
+
+def test_footer_reports_model_usage_and_cost():
+    data = _data()
+    data.usage = {
+        "calls": 3, "prompt_tokens": 17398, "completion_tokens": 6801, "estimated": False,
+    }
+    markdown, _ = render_markdown(data)
+    assert "模型用量：3 次调用" in markdown
+    assert "输入 17398 tokens" in markdown
+    assert "约 ¥" in markdown
+
+
+def test_final_score_blends_extracted_keywords_with_model_relevance():
+    from litradar.render import final_score
+    from litradar.validate import Result
+
+    with temp_dir() as tmp:
+        config = make_config(tmp)
+        config.raw.setdefault("screening", {})["keywords"] = ["EHR foundation models", "Mamba"]
+        config.raw["screening"]["keyword_weight"] = 1.0
+        article = sample_article()
+        result = Result(id=article.id, relevant=True, relevance=0.2,
+                        keywords=["EHR foundation models", "Mamba"])
+        # weight 1.0 => keyword overlap decides, regardless of the model's 0.2
+        assert final_score(article, result, None, config) == 1.0
+
+        config.raw["screening"]["keyword_weight"] = 0.0
+        assert final_score(article, result, None, config) == 0.2
+
+
+def test_translated_titles_keep_originals_and_report_scope():
+    data = _data()
+    data.title_translations = {data.items[0].id: "阿尔法研究"}
+    markdown, _ = render_markdown(data)
+    assert "cssclasses: [litradar-report]" in markdown
+    assert "阿尔法研究" in markdown
+    assert "> **原文标题**：Alpha paper" in markdown
+    assert "> [!info] 期刊论文" in markdown
+    assert "> [!abstract] 本期速览" in markdown
+    for article in data.items:
+        assert article.title in markdown
+
+
+def test_remote_translation_cannot_inject_markdown():
+    from litradar.render import translated_title
+    data = _data()
+    data.title_translations = {data.items[0].id: "中文\n# [外部](url)"}
+    title = translated_title(data, data.items[0])
+    assert "\n" not in title
+    assert "\\#" in title and "\\[" in title
+
+
+def test_wordcloud_is_visible_outside_collapsed_chart():
+    data = _data()
+    data.wordcloud_path = "assets/wc.svg"
+    markdown, _ = render_markdown(data)
+    assert "\n![今日词云](assets/wc.svg)\n" in markdown
+    assert markdown.index("![今日词云]") < markdown.index("> [!example]- 展开主题统计图表")
+    assert "> ![今日词云]" not in markdown
+
+
+def test_wordcloud_does_not_require_topic_matches_or_chart():
+    from litradar.render import render_topics
+    data = _data()
+    data.items[0].title = "Wheat chromatin assembly variants prediction"
+    data.items = data.items[:1]
+    data.wordcloud_path = "assets/wc.svg"
+    assert "![今日词云](assets/wc.svg)" in render_topics(data)
+    data.config.raw["report"]["topic_chart"] = False
+    assert "![今日词云](assets/wc.svg)" in render_topics(data)

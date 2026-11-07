@@ -31,6 +31,7 @@ class Result:
     conclusion: str | None = None
     conclusion_source: str | None = None
     summary_zh: str | None = None
+    keywords: list[str] = field(default_factory=list)
     doi: str | None = None
     notes: list[str] = field(default_factory=list)
     model_supplied: bool = True
@@ -47,6 +48,7 @@ class Result:
             "conclusion": self.conclusion,
             "conclusion_source": self.conclusion_source,
             "summary_zh": self.summary_zh,
+            "keywords": self.keywords,
             "doi": self.doi,
         }
 
@@ -63,6 +65,7 @@ class Result:
             conclusion=data.get("conclusion"),
             conclusion_source=data.get("conclusion_source"),
             summary_zh=data.get("summary_zh"),
+            keywords=list(data.get("keywords") or []),
             doi=data.get("doi"),
         )
 
@@ -177,6 +180,16 @@ def validate_results(
         tags = entry.get("topic_tags") or []
         if isinstance(tags, list):
             result.topic_tags = [str(tag).strip() for tag in tags if str(tag).strip()][:max_tags]
+        keywords = entry.get("keywords") or []
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        if isinstance(keywords, list):
+            cleaned: list[str] = []
+            for word in keywords:
+                text = str(word).strip()[:60]
+                if text and text.casefold() not in {item.casefold() for item in cleaned}:
+                    cleaned.append(text)
+            result.keywords = cleaned[:8]
 
         # Rule 2: a DOI supplied by the model must match the candidate's.
         model_doi = normalize_doi(entry.get("doi"))
