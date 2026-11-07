@@ -1,5 +1,6 @@
 """Configuration: defaults, per-journal files, and honest validation errors."""
 
+import json
 from pathlib import Path
 
 import yaml
@@ -204,7 +205,7 @@ def test_config_local_overlay_wins_over_config_yaml():
     with temp_dir() as tmp:
         (tmp / ".litradar").mkdir(parents=True, exist_ok=True)
         (tmp / ".litradar" / "config.yaml").write_text(
-            f'version: 1\nvault: "{tmp}"\ndirection: "原方向"\n'
+            f'version: 1\nvault: {json.dumps(str(tmp))}\ndirection: "原方向"\n'
             "screening:\n  keyword_weight: 0.5\n",
             encoding="utf-8",
         )

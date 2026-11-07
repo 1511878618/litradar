@@ -228,19 +228,14 @@ def test_doctor_warns_about_inline_api_key():
 
 
 def test_logger_survives_an_unwritable_log_file():
-    import os
-
-    from helpers import temp_dir
-
-    from litradar.logs import Logger
+    from unittest.mock import patch
 
     with temp_dir() as tmp:
-        locked = tmp / "locked"
-        locked.mkdir()
-        os.chmod(locked, 0o500)
-        try:
-            logger = Logger(file_path=locked / "cli.log")  # must not raise
-            logger.info("still works")
-            assert logger._files == []
-        finally:
-            os.chmod(locked, 0o700)
+        output = io.StringIO()
+        with patch("builtins.open", side_effect=PermissionError("read-only log")):
+            logger = Logger(file_path=tmp / "cli.log", stream=output)
+        logger.info("still works")
+        assert logger._files == []
+        assert "still works" in output.getvalue()
+        assert "read-only log" in output.getvalue()
+

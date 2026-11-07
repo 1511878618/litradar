@@ -1,5 +1,7 @@
 """Research profile from a Zotero collection: direction + keywords, no model needed."""
 
+import json
+
 from helpers import make_config, temp_dir
 
 from litradar.profile import build_profile, to_yaml
@@ -51,7 +53,7 @@ def test_profile_file_overrides_direction_and_keywords():
     with temp_dir() as tmp:
         (tmp / ".litradar").mkdir(parents=True, exist_ok=True)
         (tmp / ".litradar" / "config.yaml").write_text(
-            f'version: 1\nvault: "{tmp}"\ndirection: "旧方向"\n'
+            f'version: 1\nvault: {json.dumps(str(tmp))}\ndirection: "旧方向"\n'
             "screening:\n  keywords: [old]\n",
             encoding="utf-8",
         )

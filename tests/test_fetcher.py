@@ -123,22 +123,17 @@ def test_cache_ignores_expired_entries():
 
 
 def test_fetcher_survives_an_unwritable_cache_dir():
-    import os
+    from pathlib import Path
+    from unittest.mock import patch
 
-    from helpers import temp_dir
-
-    from litradar.fetcher import Fetcher
-
+    # Windows chmod does not emulate a POSIX unwritable directory. Inject the
+    # actual filesystem error so the fallback is exercised on every platform.
     with temp_dir() as tmp:
-        locked = tmp / "locked"
-        locked.mkdir()
-        os.chmod(locked, 0o500)
-        try:
-            fetcher = Fetcher({}, cache_dir=locked / "cache")
-            assert fetcher.cache_dir is None
-            assert fetcher.no_cache is True
-        finally:
-            os.chmod(locked, 0o700)
+        with patch.object(Path, "mkdir", side_effect=PermissionError("read-only cache")):
+            fetcher = Fetcher({}, cache_dir=tmp / "cache")
+        assert fetcher.cache_dir is None
+        assert fetcher.no_cache is True
+
 
 
 def test_tls_eof_uses_system_transport_but_certificate_errors_do_not():
