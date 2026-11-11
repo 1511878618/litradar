@@ -44,12 +44,12 @@ const MODEL_PRESETS: ModelPreset[] = [
 ];
 
 const SCAN_LABELS: Record<string, string> = {
-  ok: "✅ 已读",
+  ok: "✅ 抓取成功",
   "metadata-only": "⚠ 仅元数据",
   "off-cycle": "🛌 非出版日",
   blocked: "⛔ 被拦截",
   timeout: "⏱ 超时",
-  error: "❌ 解析失败",
+  error: "❌ 抓取失败",
   running: "⏳ 进行中",
 };
 
@@ -144,8 +144,8 @@ function asArticles(value: unknown): Article[] {
   );
 }
 
-function newArticles(store: StorePayload | null): Article[] {
-  return asArticles(store?.items).filter((item) => !item.already_seen);
+export function batchArticles(store: StorePayload | null): Article[] {
+  return asArticles(store?.items);
 }
 
 function isPreprint(item: Article): boolean {
@@ -210,6 +210,7 @@ export class LitradarView extends ItemView {
   private wasRunning = false;
   private closed = false;
   private selectedRunId: string | null = null;
+  private panelTab: "today" | "library" | "status" = "today";
   private archiveDays = 7;
   private archiveItems: Article[] = [];
   private archiveQuery = "";
@@ -323,6 +324,11 @@ export class LitradarView extends ItemView {
       if (changed) this.render();
     } catch (error) {
       if (this.closed) return;
+      if (this.snapshot?.store) {
+        this.snapshot = { ...this.snapshot, error: error instanceof Error ? error.message : String(error) };
+        this.render();
+        return;
+      }
       this.snapshot = {
         initialized: false,
         storeDir: this.plugin.reader.storeDir,
@@ -437,12 +443,14 @@ export class LitradarView extends ItemView {
     const data = this.snapshot;
     this.renderHeader(container, data);
     this.renderBanners(container, data);
-    if (!this.selectedRunId) {
-      this.renderSchedule(container, data);
-      this.renderToolbar(container, data);
-    }
+    if (!this.selectedRunId) this.renderToolbar(container, data);
     if (data) this.renderHistory(container, data);
-    this.renderLibrary(container);
+    const tabs = container.createDiv({ cls: "litradar-tabs", attr: { role: "tablist", "aria-label": "文献雷达页面" } });
+    for (const [id, label] of [["today", "今日阅读"], ["library", "文献库"], ["status", "运行状态"]] as const) {
+      const button = tabs.createEl("button", { text: label, cls: this.panelTab === id ? "is-active" : "",
+        attr: { role: "tab", "aria-selected": String(this.panelTab === id) } });
+      button.onclick = () => { this.panelTab = id; this.render(); };
+    }
 
     if (!data) {
       container.createDiv({ cls: "litradar-loading", text: "正在读取 .litradar…" });
@@ -452,9 +460,8 @@ export class LitradarView extends ItemView {
       const section = container.createEl("section", { cls: "litradar-panel litradar-panel-error" });
       section.createEl("h5", { text: "读取失败" });
       section.createEl("p", { text: data.error });
-      this.renderLog(container, data);
-      this.renderFooter(container, data);
-      return;
+      if (data.store) section.createEl("p", { text: "暂时显示上次成功读取的内容；后台会继续刷新。" });
+      else { this.renderLog(container, data); this.renderFooter(container, data); return; }
     }
     if (!data.initialized) {
       this.renderUninitialized(container, data);
@@ -468,16 +475,22 @@ export class LitradarView extends ItemView {
       return;
     }
 
-    this.renderArchive(container);
-    this.renderFilters(container, data);
-    this.renderHighlights(container, data);
-    this.renderAllItems(container, data);
-    this.renderCoverage(container, data);
-    this.renderResearch(container, data);
-    this.renderFailures(container, data);
-    this.renderValidation(container, data);
-    this.renderDoctor(container);
-    this.renderLog(container, data);
+    if (this.panelTab === "today") {
+      this.renderFilters(container, data);
+      this.renderHighlights(container, data);
+      this.renderAllItems(container, data);
+    } else if (this.panelTab === "library") {
+      this.renderLibrary(container);
+      this.renderArchive(container);
+    } else {
+      this.renderSchedule(container, data);
+      this.renderCoverage(container, data);
+      this.renderResearch(container, data);
+      this.renderFailures(container, data);
+      this.renderValidation(container, data);
+      this.renderDoctor(container);
+      this.renderLog(container, data);
+    }
     this.renderFooter(container, data);
   }
 
@@ -568,7 +581,8 @@ export class LitradarView extends ItemView {
     const inspect = actions.createEl("button", {text:"刷新入库／PDF 状态"});
     inspect.onclick=()=>void this.plugin.inspectZoteroArticle(article);
     if(article.title_zh) container.createEl("p",{cls:"litradar-card-meta",text:`原文：${article.title}`});
-    if(article.summary_zh) container.createEl("p",{text:article.summary_zh});
+    if(!article.title_zh && !/[\u4e00-\u9fff]/.test(article.title)) container.createEl("small",{cls:"litradar-muted",text:"中文标题暂未翻译 · 保留英文原题"});
+    if(article.summary_zh) container.createEl("p",{cls:"litradar-chinese-summary",text:`中文概述：${article.summary_zh}`});
     if(article.why_zh) container.createEl("p",{text:`推荐理由：${article.why_zh}`});
     if(article.extra?.late_arrival) container.createEl("p",{text:"补收录：来源延迟登记，保留原发表日期"});
     if(article.extra?.feedback_reason) container.createEl("p",{text:`推荐调整：${article.extra.feedback_reason}`});
@@ -667,8 +681,9 @@ export class LitradarView extends ItemView {
     for (const row of rows) {
       const card = details.createDiv({ cls: "litradar-card" });
       const url = safeExternalUrl(row.article.url);
-      if (url) card.createEl("a", { text: row.article.title, href: url, attr: { target: "_blank", rel: "noopener noreferrer" } });
-      else card.createEl("strong", { text: row.article.title });
+      const article = [...(this.snapshot?.store?.items || []), ...this.archiveItems].find(item => item.id === row.article.id || (item.doi && item.doi === row.article.doi)) || row.article;
+      if (url) card.createEl("a", { text: article.title_zh || article.title, href: url, attr: { target: "_blank", rel: "noopener noreferrer" } });
+      else card.createEl("strong", { text: article.title_zh || article.title });
       card.createDiv({ cls: "litradar-card-meta", text: `${row.article.journal || "未知期刊"} · ${row.status}` });
       if (row.article.abstract_raw) {
         const abstract = card.createEl("details");
@@ -676,7 +691,7 @@ export class LitradarView extends ItemView {
         abstract.createEl("summary", { text: "摘要" });
         abstract.createEl("p", { text: row.article.abstract_raw });
       }
-      this.renderReadingAction(card, row.article);
+      this.renderReadingAction(card, article);
     }
   }
 
@@ -697,13 +712,13 @@ export class LitradarView extends ItemView {
       select.value = value;
       select.onchange = () => { change(select.value); this.render(); };
     };
-    dropdown("litradar-journal-filter", "期刊", [["", "全部期刊"], ...Array.from(new Set(newArticles(data.store).map(item => item.journal))).sort().map(name => [name, name])], this.journal, value => { this.journal = value; });
+    dropdown("litradar-journal-filter", "期刊", [["", "全部期刊"], ...Array.from(new Set(batchArticles(data.store).map(item => item.journal))).sort().map(name => [name, name])], this.journal, value => { this.journal = value; });
     dropdown("litradar-kind-filter", "文献类型", [["", "全部类型"], ["journal", "期刊文章"], ["preprint", "预印本"]], this.articleKind, value => { this.articleKind = value; });
     dropdown("litradar-relevance-filter", "相关性", [["", "全部相关性"], ["relevant", "仅模型判定相关"]], this.relevantOnly ? "relevant" : "", value => { this.relevantOnly = !!value; });
     const clear = row.createEl("button", { text: "清除筛选" });
     clear.onclick = () => { this.query = this.journal = this.articleKind = ""; this.relevantOnly = false; this.render(); };
-    const items = newArticles(data.store);
-    row.createEl("small", { text: `本批次新条目 ${items.filter(item => this.articleMatches(item, data)).length} / ${items.length} 篇 · 筛选不影响独立阅读清单` });
+    const items = batchArticles(data.store);
+    row.createEl("small", { text: `本批次收录 ${items.filter(item => this.articleMatches(item, data)).length} / ${items.length} 篇 · 已报告的文献仍可浏览` });
   }
 
   private renderHeader(container: HTMLElement, data: PanelData | null): void {
@@ -759,7 +774,7 @@ export class LitradarView extends ItemView {
 
     const scans = storeScans(data.store);
     const allFailed = allFailedOf(data);
-    const items = data.report?.new_items ?? newArticles(data.store).length;
+    const items = batchArticles(data.store).length;
     const highlights =
       data.report?.highlights ??
       (screenResults(data).filter((result) => result.relevant === true).length);
@@ -873,28 +888,14 @@ export class LitradarView extends ItemView {
     settings.onclick = () => this.openSettings();
     const busy = !!this.plugin.job;
     const blocked = !!this.plugin.engineBlocker();
-    const addButton = (label: string, action: ActionKind, primary = false): void => {
-      const button = actions.createEl("button", {
-        cls: `litradar-btn${primary ? " litradar-btn-primary" : ""}`,
-        text: label,
-      });
-      button.disabled = busy || blocked;
-      button.onclick = () => void this.plugin.runAction(action, action === "repair" ? {runId:data?.activeRunId || undefined} : undefined);
-    };
-
-    if (!schedule.todayFetched) {
-      addButton("立即抓取并生成", "run", true);
-    } else if (!data.report) {
-      addButton("生成今日日报", "render", true);
-    } else {
-      addButton("重新抓取并生成", "run");
-    }
-    if (busy) {
-      const cancel = actions.createEl("button", {
-        cls: "litradar-btn litradar-btn-danger",
-        text: "取消",
-      });
-      cancel.onclick = () => this.plugin.cancelJob();
+    const state = this.plugin.settings.autoRunState;
+    if (state?.day === this.plugin.today()) {
+      section.createEl("p", { text: `自动任务：${state.message}${state.retryAt > Date.now() ? ` · ${formatTime(new Date(state.retryAt).toISOString())} 重试` : ""}` });
+      if (["waiting", "blocked", "paused"].includes(state.status)) {
+        const resume = section.createEl("button", { text: "继续自动任务" });
+        resume.disabled = busy || blocked || !this.plugin.settings.autoRunEnabled;
+        resume.onclick = () => void this.plugin.resumeAutoRun();
+      }
     }
   }
 
@@ -915,8 +916,9 @@ export class LitradarView extends ItemView {
       action: ActionKind,
       enabled: boolean,
       reasonText?: string,
+      parent: HTMLElement = toolbar,
     ): void => {
-      const button = toolbar.createEl("button", { cls: "litradar-btn", text: label });
+      const button = parent.createEl("button", { cls: "litradar-btn", text: label });
       button.disabled = !enabled;
       if (!enabled && reasonText) button.title = reasonText;
       button.onclick = () => {
@@ -924,16 +926,20 @@ export class LitradarView extends ItemView {
       };
     };
 
-    add("抓取并生成", "run", !engineBlocked && !busy && initialized, reason("尚未初始化"));
-    add("只抓取", "fetch", !engineBlocked && !busy && initialized, reason("尚未初始化"));
-    add("重试失败期刊", "repair", !engineBlocked && !busy && hasStore, reason("尚无批次"));
-    add("补齐／回查迟到", "maintain", !engineBlocked && !busy && initialized, reason());
-    add("重生成", "render", !engineBlocked && !busy && hasStore, reason("今日尚未抓取"));
-    add("算相关度", "embed", !engineBlocked && !busy && hasStore, reason("今日尚未抓取"));
+    add("更新文献", "run", !engineBlocked && !busy && initialized, reason("尚未初始化"));
+    const more = toolbar.createEl("details", { cls: "litradar-more-actions" });
+    more.dataset.stateKey = "more-actions";
+    more.createEl("summary", { text: "更多操作" });
+    more.createEl("small", { text: "重生成复用已抓取数据；回查处理最近几天。" });
+    add("只抓取", "fetch", !engineBlocked && !busy && initialized, reason("尚未初始化"), more);
+    add("重试失败来源", "repair", !engineBlocked && !busy && hasStore, reason("尚无批次"), more);
+    add("补齐／回查迟到", "maintain", !engineBlocked && !busy && initialized, reason(), more);
+    add("重新生成推荐和日报", "render", !engineBlocked && !busy && hasStore, reason("尚无批次"), more);
+    add("重算相关度", "embed", !engineBlocked && !busy && hasStore, reason("尚无批次"), more);
 
     const reportButton = toolbar.createEl("button", { cls: "litradar-btn", text: "打开日报" });
-    reportButton.disabled = !!engineBlocked || busy || !hasReport;
-    reportButton.title = engineBlocked ?? (busy ? "任务进行中" : hasReport ? "" : "尚未生成日报");
+    reportButton.disabled = !hasReport;
+    reportButton.title = hasReport ? "" : "尚未生成日报";
     reportButton.onclick = () => {
       void this.plugin.openReport(data?.activeRunId ?? undefined);
     };
@@ -959,7 +965,7 @@ export class LitradarView extends ItemView {
       text: data.profile.fromZotero
         ? `来自 Zotero${data.profile.sources.length ? " · " + data.profile.sources.join("、") : ""}` +
           (data.profile.updatedAt ? ` · ${data.profile.updatedAt.slice(0, 10)}` : "")
-        : "当前来自 config.yaml；尚未从 Zotero 生成",
+        : "使用手动研究设置",
     });
     const build = head.createEl("button", { cls: "litradar-btn", text: "从 Zotero 生成" });
     build.onclick = () => {
@@ -1165,7 +1171,7 @@ export class LitradarView extends ItemView {
   private renderHighlights(container: HTMLElement, data: PanelData): void {
     const section = container.createEl("section", { cls: "litradar-panel litradar-highlights" });
     const cards = this.highlightCards(data).filter(card => this.articleMatches(card.item, data));
-    const cap = data.store?.items?.some(item=>typeof item.extra?.highlight === "boolean") ? cards.length : data.report?.highlights ?? 8;
+    const cap = data.store?.items?.some(item=>typeof item.extra?.highlight === "boolean") ? cards.length : 8;
     section.createEl("h5", {
       text: `与你最相关（${Math.min(cards.length, Math.max(0, cap))} 篇）`,
     });
@@ -1175,11 +1181,11 @@ export class LitradarView extends ItemView {
       if (this.hasFilters()) {
         message = "没有符合筛选条件的推荐文献，试试清除筛选或浏览全部条目。";
       } else if (!data.screen) {
-        message = "未找到 screen.json：本轮可能未启用 LLM，或尚未生成筛选结果。";
+        message = "本批次尚无模型推荐。可浏览下方文献，或在“更多操作”中重新生成推荐。";
       } else if (screenResults(data).length === 0) {
         message = "本轮没有置顶条目。";
       } else {
-        message = "screen.json 中没有可展示的置顶条目（可能全部为不相关）。";
+        message = "本批次没有符合推荐条件的文献，全部收录仍可在下方浏览。";
       }
       section.createDiv({ cls: "litradar-empty-line", text: message });
       return;
@@ -1189,7 +1195,6 @@ export class LitradarView extends ItemView {
       const item = card.item;
       const result = card.result;
       const cardEl = section.createDiv({ cls: "litradar-card" });
-      this.renderReadingAction(cardEl, item, data.store?.window?.end || data.activeRunId || undefined);
       const titleRow = cardEl.createDiv({ cls: "litradar-card-title" });
       const url = safeExternalUrl(item.url);
       if (url) {
@@ -1234,11 +1239,12 @@ export class LitradarView extends ItemView {
           doi.rel = "noopener noreferrer";
         }
       }
+      this.renderReadingAction(cardEl, item, data.store?.window?.end || data.activeRunId || undefined);
     }
   }
 
   private highlightCards(data: PanelData): HighlightCard[] {
-    const byId = new Map(newArticles(data.store).map((item) => [item.id, item]));
+    const byId = new Map(batchArticles(data.store).map((item) => [item.id, item]));
     const cards: HighlightCard[] = [];
     if ([...byId.values()].some(item => typeof item.extra?.highlight === "boolean")) {
       return [...byId.values()].filter(item=>item.extra?.highlight === true && !item.extra?.superseded_by).map(item=>({item,result:{id:item.id,relevant:true,relevance:Number(item.extra?.rank_score || 0),why:item.why_zh}})).sort((a,b)=>(b.result.relevance || 0)-(a.result.relevance || 0));
@@ -1253,7 +1259,7 @@ export class LitradarView extends ItemView {
   }
 
   private renderAllItems(container: HTMLElement, data: PanelData): void {
-    const items = newArticles(data.store).filter(item => this.articleMatches(item, data));
+    const items = batchArticles(data.store).filter(item => this.articleMatches(item, data));
     if (items.length === 0) {
       const details = container.createEl("details", { cls: "litradar-panel litradar-all" });
       details.createEl("summary", { text: "全部条目（0 篇）" });
@@ -1313,7 +1319,7 @@ export class LitradarView extends ItemView {
           titleLink.rel = "noopener noreferrer";
           titleLink.addEventListener("click", (event) => event.stopPropagation());
         } else {
-          summary.createSpan({ cls: "litradar-item-title", text: item.title });
+          summary.createSpan({ cls: "litradar-item-title", text: item.title_zh || item.title });
         }
         const subject = articleSubject(item);
         summary.createSpan({
@@ -1382,7 +1388,7 @@ export class LitradarView extends ItemView {
     if (storeScans(data.store).some((scan) => !isHealthy(scan.status))) {
       return "覆盖不完整：部分期刊抓取失败，无法判断本日是否有新条目。";
     }
-    return "本日没有待展示的新条目（可能均已报告过）。";
+    return "本批次暂无可展示的文献。可查看覆盖情况或选择其他日期。";
   }
 
   private renderFailures(container: HTMLElement, data: PanelData): void {
@@ -1522,7 +1528,7 @@ export class LitradarView extends ItemView {
       text:
         `没有找到 ${data.storeDir}/store/ 下的抓取结果。` +
         `计划时间是 ${data.schedule.time}（${data.schedule.tz}）。` +
-        "点击上方「立即抓取并生成」，或运行 `python -m litradar run`。",
+        "点击上方「更新文献」开始抓取并生成日报。",
     });
     if (Object.keys(data.scans).length > 0) {
       section.createEl("p", {
@@ -1537,7 +1543,7 @@ export class LitradarView extends ItemView {
     const footer = container.createDiv({ cls: "litradar-footer" });
     footer.setText(
       `${data.storeDir} 只读 · 引擎 ${engine.engine ?? "未检测"}` +
-        `${engine.schema ? `（schema ${engine.schema}）` : ""} · 插件 0.3.2`,
+        `${engine.schema ? `（schema ${engine.schema}）` : ""} · 插件 ${this.plugin.manifest.version}`,
     );
   }
 

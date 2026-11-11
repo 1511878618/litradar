@@ -174,3 +174,15 @@ def test_weekly_render_writes_hotspots_and_section():
             (ctx.paths.run_dir(week.run_id) / "hotspots.json").read_text(encoding="utf-8")
         )
         assert stored["hotspots"][0]["evidence"] == [article.id, second.id]
+
+        # Offline repair must keep the already generated weekly synthesis.
+        calls.clear()
+        original = llm.chat_json
+        llm.chat_json = fake_chat
+        try:
+            offline = render_report(ctx, week.run_id, use_llm=False)
+        finally:
+            llm.chat_json = original
+        assert calls == []
+        assert offline.hotspots == 1
+        assert "本周方向：正选择" in offline.report_path.read_text(encoding="utf-8")

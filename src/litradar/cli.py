@@ -895,19 +895,19 @@ def cmd_config(args: argparse.Namespace) -> int:
             key = str(_arg(args, "key") or "").strip()
             if not key:
                 raise ConfigError("config set/unset 需要配置键，例如 llm.model")
-            data: dict = {}
-            if overlay.exists():
-                loaded = yaml.safe_load(overlay.read_text(encoding="utf-8")) or {}
-                if isinstance(loaded, dict):
-                    data = loaded
-            if command == "set":
-                _set_dotted(data, key, _parse_config_value(str(_arg(args, "value") or "")))
-            else:
-                _unset_dotted(data, key)
-            overlay.parent.mkdir(parents=True, exist_ok=True)
-            overlay.write_text(
-                yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8"
-            )
+            from .state import atomic_write_text
+
+            with VaultLock(ctx.paths.root / ".config.lock", wait_seconds=3):
+                data: dict = {}
+                if overlay.exists():
+                    loaded = yaml.safe_load(overlay.read_text(encoding="utf-8")) or {}
+                    if isinstance(loaded, dict):
+                        data = loaded
+                if command == "set":
+                    _set_dotted(data, key, _parse_config_value(str(_arg(args, "value") or "")))
+                else:
+                    _unset_dotted(data, key)
+                atomic_write_text(overlay, yaml.safe_dump(data, allow_unicode=True, sort_keys=False), permissions=0o600)
             print(f"{key} = {json.dumps(_parse_config_value(str(_arg(args, 'value') or '')), ensure_ascii=False) if command == 'set' else '（已删除）'}")
             print(f"写入 {overlay}（下次运行生效；config.yaml 不动）")
             return EXIT_OK

@@ -28,6 +28,26 @@ def test_defaults_are_layered_in():
         assert config.get("llm.model") == "deepseek-chat"
 
 
+def test_manual_research_settings_can_override_and_restore_profile():
+    with temp_dir() as tmp:
+        write_skeleton(tmp)
+        root = tmp / ".litradar"
+        profile = "direction: Zotero direction\nkeywords: [profile-keyword]\n"
+        (root / "profile.yaml").write_text(profile, encoding="utf-8")
+        manual = {"direction": "Manual direction", "screening": {"keywords": ["manual-keyword"]},
+                  "research": {"use_profile": False}}
+        (root / "config.local.yaml").write_text(yaml.safe_dump(manual), encoding="utf-8")
+        cfg = load_config(tmp)
+        assert cfg.direction == "Manual direction"
+        assert cfg.get("screening.keywords") == ["manual-keyword"]
+        manual["research"]["use_profile"] = True
+        (root / "config.local.yaml").write_text(yaml.safe_dump(manual), encoding="utf-8")
+        cfg = load_config(tmp)
+        assert cfg.direction == "Zotero direction"
+        assert cfg.get("screening.keywords") == ["profile-keyword"]
+        assert (root / "profile.yaml").read_text(encoding="utf-8") == profile
+
+
 def test_missing_config_raises():
     with temp_dir() as tmp:
         try:

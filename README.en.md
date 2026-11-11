@@ -4,7 +4,7 @@
 > decides what gets highlighted — never what gets included.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-384%20passed-brightgreen)](tests/run_tests.py)
+[![Tests](https://img.shields.io/badge/tests-387%20passed-brightgreen)](tests/run_tests.py)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.2.0-orange)](CHANGELOG.md)
 

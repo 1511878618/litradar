@@ -142,7 +142,11 @@ def rebuild_presentations(ctx):
             ctx.paths.run_dir(store.run_id) / "presentation.json",
             {
                 "titles": titles,
-                "summaries": {key: row.summary_zh for key, row in results.items() if row.summary_zh},
+                "summaries": {
+                    **{key: row.summary_zh for key, row in results.items() if row.summary_zh},
+                    **{row["id"]: row["digest_zh"] for row in deep.get("papers", [])
+                       if row.get("id") and row.get("digest_zh")},
+                },
                 "why": {key: row.why for key, row in results.items() if row.why},
                 "extras": {
                     a.id: {

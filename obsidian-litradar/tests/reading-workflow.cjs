@@ -90,7 +90,7 @@ function load(name) {
 
   const View = load('view').LitradarView;
   let preferred;
-  const data = { activeRunId: 'old', initialized: true };
+  const data = { activeRunId: 'old', initialized: true, store: {items:[article]} };
   const view = new View({}, { zoteroLibrary: [], zoteroError: '', refreshZoteroReading: async () => {}, today: () => '2026-11-05', reader: { loadPanelData: async (today, id) => { preferred = id; return data; } } });
   view.selectedRunId = '2026-11-01';
   let renders = 0;
@@ -102,5 +102,9 @@ function load(name) {
   view.selectedRunId = null;
   await view.refresh();
   assert.equal(preferred, null);
+  view.plugin.reader.loadPanelData=async()=>{throw new Error('temporary read error');};
+  await view.refresh();
+  assert.equal(view.snapshot.store,data.store,'Keep the last readable batch during a transient error');
+  assert.match(view.snapshot.error,/temporary/);
   console.log('PASS: filters, DOI identity, Zotero-owned states, queued writes, migration/failure recovery, remote refresh, history selection, unchanged refresh');
 })().catch(error => { console.error(error); process.exitCode = 1; });

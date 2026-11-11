@@ -34,6 +34,7 @@ DEFAULTS: dict[str, Any] = {
     "version": 1,
     "vault": "",
     "direction": "",
+    "research": {"use_profile": True},
     "language": "zh-CN",
     "output": {
         "report_dir": "02-Reading/文献雷达/{yyyy}/{MM}",
@@ -190,7 +191,7 @@ def load_config(vault: Path | str, path: Path | None = None, require: bool = Tru
         if isinstance(local, dict):
             loaded = deep_merge(loaded, local)
     profile_path = config_path.parent / "profile.yaml"
-    if profile_path.exists():
+    if profile_path.exists() and loaded.get("research", {}).get("use_profile", True):
         try:
             profile = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
         except (yaml.YAMLError, OSError) as exc:

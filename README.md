@@ -3,7 +3,7 @@
 > 每天一份**可审计**的文献日报：期刊与预印本全量收录，相关性只决定置顶，不决定取舍。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-384%20passed-brightgreen)](tests/run_tests.py)
+[![Tests](https://img.shields.io/badge/tests-387%20passed-brightgreen)](tests/run_tests.py)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.2.0-orange)](CHANGELOG.md)
 
@@ -98,6 +98,8 @@ litradar status --vault .          # 上次抓取、覆盖状态
 
 没有 API key、模型超时、模型返回垃圾 JSON——日报都会照常生成，只是置顶退化为关键词。
 
+Obsidian 设置中的「API key 环境变量名」只填写 `LITRADAR_API_KEY` 这样的变量名，点击「保存变量名」后同步到引擎配置。实际密钥请设置到 `.litradar/config.local.yaml` 的 `llm.api_key`，或使用 `llm.api_key_file` 指向密钥文件；将密钥填入环境变量名输入框不会生效。
+
 ## Zotero 联动安装（可选）
 
 完整步骤见 [Zotero 联动安装教程](docs/zotero-setup.md)：启用 Zotero 10 本地通信，在 Zotero 中安装 Reading List（阅读状态联动时必需）和 Zotero Bridge 0.2.0（状态联动或“下载 PDF”时必需），再配置 Litradar 的文献保存文件夹。
@@ -130,7 +132,7 @@ litradar status --vault .          # 上次抓取、覆盖状态
 
 ## 期刊
 
-`litradar init` 会写入 17 本可直接用的期刊配置。加一刊 = 加一个 YAML：
+`litradar init` 会写入 21 个期刊与预印本来源配置。加一刊 = 加一个 YAML：
 
 ```yaml
 name: Nature Genetics
@@ -169,7 +171,7 @@ litradar schedule install --vault ~/my-vault --apply  # 真正注册
 
 | 命令 | 作用 |
 |---|---|
-| `init` | 建 `.litradar/` 骨架（配置 + 17 本示例刊 + 说明） |
+| `init` | 建 `.litradar/` 骨架（配置 + 21 个期刊与预印本来源 + 说明） |
 | `fetch` | 抓取 → 日期窗 → 去重 → `store/<date>.json` |
 | `render` | 读 store → [LLM] → 校验 → 日报 + 索引 |
 | `run` | `fetch` + `render`（`--catch-up` 补跑漏掉的日期；配置日自动追加周报） |

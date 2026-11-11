@@ -2,10 +2,26 @@ const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/st
 const cache={};
 function load(name){if(cache[name])return cache[name];const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(`src/${name}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2018}}).outputText,{exports,window:{setTimeout:callback=>{callback();return 1;}},require:dep=>dep==='obsidian'?{Plugin:class{},PluginSettingTab:class{},Modal:class{},ItemView:class{},Notice:class{},FileSystemAdapter:class{},TFile:class{}}:dep.startsWith('./')?load(dep.slice(2)):require(dep)});return cache[name]=exports;}
 (async()=>{
+ const {latestDailyRunId}=load('store');
+ assert.equal(latestDailyRunId(['2026-11-02','2026-11-07','2026-W45']),'2026-11-07');
+ const sortReader=new (load('store').LitradarStore)({},'.litradar');
+ sortReader.listFiles=async()=>['2026-11-07.json','2026-W45.json','2026-11-01.json'];
+ sortReader.readJson=async()=>({window:{end:'2026-11-08'}});
+ assert.deepEqual(Array.from(await sortReader.listRunIds()),['2026-11-01','2026-11-07','2026-W45']);
+ const visible=load('view').batchArticles({items:[{id:'a',title:'Already reported',already_seen:true}]});
+ assert.equal(visible.length,1,'Previously reported articles remain visible in their batch');
+ const profileReader=new (load('store').LitradarStore)({},'.litradar',async()=>({direction:'Manual direction',screening:{keywords:['manual']},research:{use_profile:false}}));
+ profileReader.exists=async()=>true;
+ const profile=await profileReader.readProfile();
+ assert.equal(profile.direction,'Manual direction');assert.equal(profile.fromZotero,false);
  const {LitradarStore}=load('store'); const reader=new LitradarStore({},'.litradar');
  const article={id:'doi:10.1/a',doi:'10.1/a',title:'Cardiac prediction',journal:'Nature'};
  reader.readJson=async path=>path.endsWith('presentation.json')?{titles:{[article.id]:'心脏预测'},summaries:{[article.id]:'分析心脏风险'},extras:{[article.id]:{highlight:true}}}:path.endsWith('versions.json')?{'10.1/a':[{doi:'10.1/pre'}]}:{items:[{...article}]};
  const enriched=await reader.readStore('2026-11-04');assert.equal(enriched.items[0].title_zh,'心脏预测');assert.equal(enriched.items[0].title,'Cardiac prediction');
+ const readMetadata=reader.readJson;
+ reader.readJson=async path=>path.endsWith('deepread.json')?{papers:[{id:article.id,title_zh:'精读标题',digest_zh:'与日报相同的中文精读'}]}:readMetadata(path);
+ const deepEnriched=await reader.readStore('2026-11-04');
+ assert.equal(deepEnriched.items[0].title_zh,'精读标题');assert.equal(deepEnriched.items[0].summary_zh,'与日报相同的中文精读');
  reader.listRunIds=async()=>['2026-11-03','2026-W45','2026-11-04'];
  const archive=await reader.readArchive(0);assert.equal(archive.length,1);assert.equal(archive[0].extra.report_dates.length,2);assert.equal(archive[0].extra.versions[0].doi,'10.1/pre');
  const {matchesArticle}=load('reading');assert.equal(matchesArticle(enriched.items[0],{query:'心脏 风险',journal:'',kind:'',relevantOnly:false},false,true),true);

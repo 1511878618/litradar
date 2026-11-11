@@ -84,6 +84,23 @@ def test_version_json():
     assert payload["schema"] == 2
 
 
+def test_config_edits_preserve_other_fields_and_use_private_file():
+    import os
+    import stat
+
+    with temp_dir() as tmp:
+        _init(tmp)
+        for key, value in [("llm.model", "test-model"), ("direction", "Manual direction")]:
+            code, _ = capture_stdout(lambda key=key, value=value: main(["config", "set", key, value, "--vault", str(tmp)]))
+            assert code == 0
+        overlay = tmp / ".litradar/config.local.yaml"
+        data = yaml.safe_load(overlay.read_text(encoding="utf-8"))
+        assert data["llm"]["model"] == "test-model"
+        assert data["direction"] == "Manual direction"
+        if os.name != "nt":
+            assert stat.S_IMODE(overlay.stat().st_mode) == 0o600
+
+
 def test_init_creates_skeleton():
     with temp_dir() as tmp:
         code, out = capture_stdout(lambda: main(["init", "--vault", str(tmp)]))

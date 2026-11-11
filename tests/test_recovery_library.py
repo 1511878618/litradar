@@ -1,6 +1,7 @@
 """Repairs preserve batches; feedback and version links remain reversible."""
 
 from datetime import date
+from unittest.mock import patch
 
 from helpers import FakeFetcher, make_context, sample_article, temp_dir, write_journal
 
@@ -84,6 +85,45 @@ def test_maintain_fills_missing_days():
         results = maintain(ctx, days=2, ref=date(2026, 11, 5))
         assert len(results) == 2 and all(r["backfilled"] for r in results)
         assert ctx.paths.store_file("2026-11-03").exists() and ctx.paths.store_file("2026-11-04").exists()
+        ctx.close()
+
+
+def test_daily_llm_then_maintenance_keeps_annotations_without_model_calls():
+    from litradar import llm
+
+    with temp_dir() as tmp:
+        ctx = make_context(tmp)
+        manual(tmp, "A", [row("Cardiac prediction", "10.1/a")])
+        fetched = fetch_all(ctx, W, load_journals(ctx.config))
+        article = fetched.new_items[0]
+        digest = "研究使用心脏相关指标进行预测，标题未提供具体方法和效果，仍需查看原文确认研究细节。"
+        replies = [
+            {"results": [{"id": article.id, "relevant": True, "relevance": 0.9}]},
+            {"papers": [{"id": article.id, "title_zh": "心脏预测研究",
+                         "field_zh": "心血管研究", "digest_zh": digest,
+                         "keywords_zh": ["心脏", "预测"]}]},
+        ]
+        with patch.object(llm, "chat_json", side_effect=replies) as model:
+            report = render_report(ctx, W.run_id, use_llm=True)
+            assert model.call_count == 2
+        assert digest in report.report_path.read_text(encoding="utf-8")
+        cache = ctx.paths.run_dir(W.run_id) / "deepread.json"
+        before = cache.read_bytes()
+        first_seen = load_store(ctx.paths, W.run_id).items[0].first_seen_at
+
+        # A late paper must be included without dropping the earlier annotation.
+        manual(tmp, "A", [row("Cardiac prediction", "10.1/a"), row("Genome assembly", "10.1/late")])
+        with patch.object(llm, "chat_json", side_effect=AssertionError("must stay offline")) as model:
+            result = maintain(ctx, days=1, ref=date(2026, 11, 5), use_llm=False)
+            assert model.call_count == 0
+        assert result[0]["late"] == 1
+        text = report.report_path.read_text(encoding="utf-8")
+        assert digest in text and "Genome assembly" in text
+        assert cache.read_bytes() == before
+        assert load_store(ctx.paths, W.run_id).items[0].first_seen_at == first_seen
+        presentation = read_json(ctx.paths.run_dir(W.run_id) / "presentation.json")
+        assert presentation["titles"][article.id] == "心脏预测研究"
+        assert presentation["summaries"][article.id] == digest
         ctx.close()
 
 

@@ -617,10 +617,12 @@ def render_report(
     # Only annotate when this run actually talked to the model (or a previous
     # annotation exists): re-rendering from a cached screen.json must stay offline.
     deepread_ready = (not screen_existed or refresh) or deepread_file.exists()
-    if use_llm and deepread_ready and deepread_stage.enabled(ctx.config):
+    reuse_deepread = deepread_file.exists() and (not refresh or not use_llm)
+    # --no-llm forbids new calls, but maintenance must keep existing annotations.
+    if (reuse_deepread or (use_llm and deepread_ready)) and deepread_stage.enabled(ctx.config):
         targets = deepread_stage.limit_articles(highlights, ctx.config)
         if targets:
-            stored = read_json(deepread_file, default=None) if deepread_file.exists() and not refresh else None
+            stored = read_json(deepread_file, default=None) if reuse_deepread else None
             if isinstance(stored, dict):
                 items = [
                     deepread_stage.DeepRead.from_dict(row)
@@ -632,7 +634,7 @@ def render_report(
                     f"{stored.get('screening') or 'deepread-v1'}"
                     f"（{stored.get('model') or deepread_stage.model_name(ctx.config)}）"
                 )
-            else:
+            elif use_llm:
                 ctx.emitter.emit("progress", stage="deepread", done=0, total=len(targets))
                 try:
                     annotations, deepread_data, rejected, notes, read_label = deepread_stage.annotate(
@@ -653,9 +655,10 @@ def render_report(
 
     hotspots_payload = None
     hotspots_file = ctx.paths.run_dir(store.run_id) / "hotspots.json"
+    reuse_hotspots = hotspots_file.exists() and (not refresh or not use_llm)
     if (
         data.kind == "weekly"
-        and use_llm
+        and (use_llm or reuse_hotspots)
         and hotspots_stage.enabled(ctx.config)
         and store.items
         and ((not screen_existed or refresh) or hotspots_file.exists())
@@ -665,7 +668,7 @@ def render_report(
         )[: hotspots_stage.max_items(ctx.config)]
         stored = (
             read_json(hotspots_file, default=None)
-            if hotspots_file.exists() and not refresh
+            if reuse_hotspots
             else None
         )
         if isinstance(stored, dict):
@@ -678,7 +681,7 @@ def render_report(
                 f"{stored.get('screening') or 'hotspots-v1'}"
                 f"（{stored.get('model') or hotspots_stage.model_name(ctx.config)}）"
             )
-        else:
+        elif use_llm:
             try:
                 found, hotspots_data, rejected, notes, hot_label = hotspots_stage.annotate(
                     ctx.config, ctx.config.direction, targets, logger=ctx.logger, usage=usage
@@ -713,7 +716,8 @@ def render_report(
     from .translation import translate_titles
 
     data.title_translations, data.translation_note = translate_titles(
-        ctx.config, ctx.paths, data.items,
+        ctx.config, ctx.paths,
+        highlights + [article for article in data.items if article.id not in {h.id for h in highlights}],
         existing={key: deep.title_zh for key, deep in data.deepread.items() if deep.title_zh},
         commit=commit, logger=ctx.logger,
     )
@@ -722,7 +726,10 @@ def render_report(
             "titles": data.title_translations,
             "extras": {a.id: {**a.extra, "highlight": a.id in {h.id for h in highlights},
                                 "rank_score": final_score(a, data.results.get(a.id), data.scores, data.config)} for a in data.items},
-            "summaries": {key: result.summary_zh for key, result in data.results.items() if result.summary_zh},
+            "summaries": {
+                **{key: result.summary_zh for key, result in data.results.items() if result.summary_zh},
+                **{key: deep.digest_zh for key, deep in data.deepread.items() if deep.digest_zh},
+            },
             "why": {key: result.why for key, result in data.results.items() if result.why},
         })
     split = bool(ctx.config.get("output.split_preprints", False)) and any(

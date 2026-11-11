@@ -979,3 +979,13 @@
 @media print {
   .litradar-report .callout { box-shadow: none; break-inside: avoid; }
 }
+
+/* Reading, library and diagnostics have separate navigation. */
+.litradar-tabs { display: flex; gap: 6px; margin: 12px 0; border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 8px; }
+.litradar-tabs button { flex: 1; box-shadow: none; white-space: nowrap; }
+.litradar-tabs button.is-active { color: var(--text-on-accent); background: var(--interactive-accent); }
+.litradar-more-actions { margin-left: auto; order: 3; }
+.litradar-more-actions summary { cursor: pointer; padding: 5px 8px; }
+.litradar-more-actions[open] { flex-basis: 100%; }
+.litradar-more-actions small { display: block; color: var(--text-muted); margin: 6px 0; }
+.litradar-more-actions button { margin: 4px; }

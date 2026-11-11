@@ -60,12 +60,14 @@ def read_json(path: Path | str, default: Any = None) -> Any:
         raise EngineError(f"{path} 不是合法 JSON：{exc}") from exc
 
 
-def atomic_write_text(path: Path | str, text: str, *, backup: bool = False) -> None:
+def atomic_write_text(path: Path | str, text: str, *, backup: bool = False, permissions: int | None = None) -> None:
     """Write atomically; optionally keep one ``.bak`` generation (state files)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+        if permissions is not None:
+            os.chmod(tmp, permissions)
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())

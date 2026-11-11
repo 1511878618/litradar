@@ -91,22 +91,32 @@ export class LitradarSettingTab extends PluginSettingTab {
         text.inputEl.spellcheck = false;
       });
 
+    let apiKeyEnv = /^[A-Za-z_][A-Za-z0-9_]*$/.test(this.plugin.settings.apiKeyEnv)
+      ? this.plugin.settings.apiKeyEnv : "";
     new Setting(containerEl)
       .setName("API key 环境变量名（可选）")
       .setDesc(
-        "引擎优先读 .litradar/config.yaml 里的 llm.api_key / api_key_file；" +
-          "都没有时才读这个环境变量。插件不接触、不保存密钥，只读引擎写出的结果。",
+        "这里只填变量名，例如 LITRADAR_API_KEY，不能填密钥。保存后写入引擎 llm.api_key_env。" +
+          "密钥可在 .litradar/config.local.yaml 设置 llm.api_key，或用 llm.api_key_file 指向密钥文件；这些设置优先于环境变量。",
       )
       .addText((text) => {
         text
           .setPlaceholder("LITRADAR_API_KEY")
-          .setValue(this.plugin.settings.apiKeyEnv)
+          .setValue(apiKeyEnv)
           .onChange((value) => {
-            void this.plugin.updateSettings({ apiKeyEnv: value.trim() });
+            apiKeyEnv = value.trim();
           });
         text.inputEl.spellcheck = false;
         text.inputEl.autocomplete = "off";
-      });
+      })
+      .addButton((button) => button.setButtonText("保存变量名").onClick(async () => {
+        button.setDisabled(true);
+        try {
+          await this.plugin.saveApiKeyEnv(apiKeyEnv);
+        } finally {
+          button.setDisabled(false);
+        }
+      }));
 
     new Setting(containerEl).setName("面板").setHeading();
 
@@ -156,13 +166,13 @@ export class LitradarSettingTab extends PluginSettingTab {
     const about = containerEl.createDiv({ cls: "litradar-settings-about" });
     about.createEl("p", {
       text:
-        "插件版本 0.1.0 · 需要 Obsidian 桌面版（child_process 不可用于移动端）。" +
+        `插件版本 ${this.plugin.manifest.version} · 需要 Obsidian 桌面版。` +
         " 引擎升级请自行执行 `pipx upgrade litradar` 或重新 `pip install -U litradar`。",
     });
     about.createEl("p", {
       text:
-        "本插件不写 vault 中的任何文件；设置只保存在插件自己的 data.json 中。" +
-        " 报告、store、状态全部由引擎生成。",
+        "界面与自动任务状态保存在插件设置中；研究设置通过引擎写入配置。" +
+        " 日报、文献数据和推荐结果由引擎生成。",
     });
 
     new Setting(containerEl)
@@ -315,16 +325,31 @@ export class LitradarSettingTab extends PluginSettingTab {
     };
 
     const hint = `引擎设置写到 ${this.plugin.resolvedVaultRoot}/.litradar/config.local.yaml（下次运行生效）。`;
+    const useProfile = read("research.use_profile") !== false;
+    new Setting(containerEl)
+      .setName("研究设置来源")
+      .setDesc("画像模式优先使用已生成的 Zotero 画像；手动模式使用配置中的研究方向和关键词。切换不会删除画像或手动设置。")
+      .addDropdown(dropdown => dropdown
+        .addOption("profile", "使用 Zotero 画像（存在时优先）")
+        .addOption("manual", "使用手动研究设置")
+        .setValue(useProfile ? "profile" : "manual")
+        .onChange(async value => {
+          if (await this.plugin.engineConfigSet("research.use_profile", String(value === "profile"))) this.display();
+          else new Notice("研究设置来源保存失败，请重试。", 6000);
+        }));
+    const profileExists = await this.plugin.reader.exists(this.plugin.reader.path("profile.yaml"));
+    const profileActive = useProfile && profileExists;
 
     const direction = read("direction");
     new Setting(containerEl)
       .setName("研究方向")
-      .setDesc(`写人话即可；模型与关键词匹配都参考它。${hint}`)
+      .setDesc(profileActive ? "当前来自 Zotero 画像。切换到手动研究设置后可编辑。" : `当前使用手动设置。${hint}`)
       .addTextArea((area) => {
         area
           .setPlaceholder("分子进化；群体基因组学；…")
           .setValue(typeof direction === "string" ? direction : "")
           .onChange(debounced("direction", () => area.getValue()));
+        area.setDisabled(profileActive);
         area.inputEl.rows = 3;
         area.inputEl.addClass("litradar-settings-wide");
       });
@@ -333,19 +358,20 @@ export class LitradarSettingTab extends PluginSettingTab {
     const keywordText = Array.isArray(keywords) ? keywords.map(String).join(", ") : "";
     new Setting(containerEl)
       .setName("关键词")
-      .setDesc("逗号分隔；来自 Zotero 时可用 `litradar zotero profile --write` 自动生成。")
+      .setDesc(profileActive ? "当前来自 Zotero 画像。切换到手动研究设置后可编辑。" : "逗号分隔，保存后用于文献排序。")
       .addTextArea((area) => {
         area
           .setValue(keywordText)
           .setPlaceholder("EHR foundation models, polygenic risk score")
-          .onChange((): void => {
+          .onChange(debounced("screening.keywords", () => {
             const list = area
               .getValue()
               .split(/[,，;；\n]/)
               .map((item) => item.trim())
               .filter((item) => item.length > 0);
-            void save("screening.keywords", JSON.stringify(list));
-          });
+            return JSON.stringify(list);
+          }));
+        area.setDisabled(profileActive);
         area.inputEl.rows = 3;
         area.inputEl.addClass("litradar-settings-wide");
       });

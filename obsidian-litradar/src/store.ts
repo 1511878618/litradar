@@ -200,10 +200,16 @@ function yamlList(text: string, key: string): string[] {
   return out;
 }
 
+export function latestDailyRunId(ids: string[]): string | null {
+  const daily = ids.filter(id => /^\d{4}-\d{2}-\d{2}$/.test(id)).sort();
+  return daily[daily.length - 1] ?? ids[ids.length - 1] ?? null;
+}
+
 export class LitradarStore {
   constructor(
     private readonly app: App,
     private readonly storeDirSetting: string,
+    private readonly effectiveConfig?: () => Promise<Record<string, unknown> | null>,
   ) {}
 
   /** Absolute vault root; needed as the engine's `cwd` and `--vault`. */
@@ -287,7 +293,7 @@ export class LitradarStore {
     );
   }
 
-  /** Newest run first (mtime), so a range run_id sorts correctly too. */
+  /** Chronological report dates, oldest first; repairs never reorder history. */
   async listRunIds(): Promise<string[]> {
     const names = await this.listFiles(this.path("store"));
     const candidates = names
@@ -295,29 +301,29 @@ export class LitradarStore {
       .map((name) => name.slice(0, -".json".length));
     if (candidates.length === 0) return [];
 
-    const withTime = await Promise.all(
+    const dated = await Promise.all(
       candidates.map(async (id) => {
-        let mtime = 0;
-        try {
-          const stat = await this.app.vault.adapter.stat(this.path("store", `${id}.json`));
-          mtime = stat?.mtime ?? 0;
-        } catch {
-          mtime = 0;
+        let end = /^\d{4}-\d{2}-\d{2}$/.test(id) ? id : "";
+        if (!end) {
+          const payload = await this.readJson<StorePayload>(this.path("store", `${id}.json`));
+          end = payload?.window?.end ?? "";
         }
-        return { id, mtime };
+        return { id, end };
       }),
     );
-    withTime.sort((left, right) => left.mtime - right.mtime || left.id.localeCompare(right.id));
-    return withTime.map((entry) => entry.id);
+    dated.sort((left, right) => left.end.localeCompare(right.end) || left.id.localeCompare(right.id));
+    return dated.map((entry) => entry.id);
   }
 
   async readStore(runId: string, warnings?: string[]): Promise<StorePayload | null> {
     const payload = await this.readJson<StorePayload>(this.path("store", `${runId}.json`), warnings);
     if (!isRecord(payload)) return null;
     const presentation = await this.readJson<{titles?: Record<string,string>; summaries?: Record<string,string>; why?: Record<string,string>; extras?: Record<string, Record<string,unknown>>}>(this.path("runs", runId, "presentation.json"));
+    const deep = await this.readJson<{papers?: {id: string; title_zh?: string; digest_zh?: string}[]}>(this.path("runs", runId, "deepread.json"));
+    const annotations = new Map((Array.isArray(deep?.papers) ? deep.papers : []).map(row => [row.id, row]));
     for (const item of payload.items || []) {
-      item.title_zh = presentation?.titles?.[item.id];
-      item.summary_zh = presentation?.summaries?.[item.id];
+      item.title_zh = annotations.get(item.id)?.title_zh || presentation?.titles?.[item.id] || item.title_zh;
+      item.summary_zh = annotations.get(item.id)?.digest_zh || presentation?.summaries?.[item.id] || item.summary_zh;
       item.why_zh = presentation?.why?.[item.id];
       item.extra = {...item.extra, ...presentation?.extras?.[item.id]};
     }
@@ -444,6 +450,18 @@ export class LitradarStore {
 
   /** Current research profile.  profile.yaml wins; config.yaml is the fallback. */
   async readProfile(): Promise<ProfileInfo> {
+    const config = await this.effectiveConfig?.();
+    if (this.effectiveConfig && !config) throw new Error("暂时无法读取生效的研究配置，请稍后刷新。");
+    if (config) {
+      const screening = config.screening as {keywords?: string[]} | undefined;
+      const research = config.research as {use_profile?: boolean} | undefined;
+      const hasProfile = await this.exists(this.path("profile.yaml"));
+      return {
+        direction: String(config.direction ?? ""), keywords: screening?.keywords ?? [],
+        sources: [], model: "", updatedAt: null,
+        fromZotero: hasProfile && research?.use_profile !== false,
+      };
+    }
     const profileText = (await this.readText(this.path("profile.yaml"))) ?? "";
     if (profileText.trim()) {
       return {
@@ -512,7 +530,7 @@ export class LitradarStore {
     if (preferredRunId && runIds.includes(preferredRunId)) {
       activeRunId = preferredRunId;
     } else if (runIds.length > 0) {
-      activeRunId = runIds[runIds.length - 1];
+      activeRunId = latestDailyRunId(runIds);
     }
 
     let store: StorePayload | null = null;

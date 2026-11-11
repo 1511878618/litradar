@@ -257,6 +257,16 @@ export interface EngineStatus {
   checkedAt?: number;
 }
 
+export interface AutoRunState {
+  day: string;
+  action: "run" | "render" | "maintain";
+  status: "running" | "waiting" | "done" | "paused" | "blocked";
+  attempts: number;
+  retryAt: number;
+  message: string;
+  runId?: string;
+}
+
 export interface LitradarSettings {
   /** Absolute path to the Python interpreter. Never resolved through PATH. */
   pythonPath: string;
@@ -272,6 +282,7 @@ export interface LitradarSettings {
   autoRunEnabled: boolean;
   autoBackfillEnabled: boolean;
   backfillDays: number;
+  autoRunState?: AutoRunState;
   /** Show the last 20 stderr lines in the panel. */
   showLogTail: boolean;
   /** Minimum engine version accepted by this plugin. */

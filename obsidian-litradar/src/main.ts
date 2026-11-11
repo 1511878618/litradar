@@ -12,12 +12,13 @@ import { findReadingEntry, normalizeLibrary, type ReadingStatus, type ZoteroRead
 import type { Article } from "./types";
 import { Bridge, BridgeError } from "./bridge";
 import { LitradarSettingTab } from "./settings";
-import { LitradarStore } from "./store";
+import { LitradarStore, latestDailyRunId } from "./store";
 import { LitradarView, VIEW_TYPE_LITRADAR } from "./view";
 import {
   DEFAULT_SETTINGS,
   EXIT,
   type ActionKind,
+  type AutoRunState,
   type DoctorPayload,
   type EngineStatus,
   type JobOutcome,
@@ -100,13 +101,14 @@ export default class LitradarPlugin extends Plugin {
   private checkTimer: number | null = null;
   private autoTimer: number | null = null;
   private autoStartTimer: number | null = null;
-  private autoRunDay: string | null = null;
+  private autoChecking = false;
+  private unloading = false;
   private checkToken = 0;
   private bridgeDirty = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    this.reader = new LitradarStore(this.app, this.settings.storeDir);
+    this.reader = new LitradarStore(this.app, this.settings.storeDir, () => this.engineConfig());
     this.engine = { state: "unknown", interpreter: this.settings.pythonPath };
     this.makeBridge();
 
@@ -174,6 +176,7 @@ export default class LitradarPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.unloading = true;
     if (this.checkTimer !== null) {
       window.clearTimeout(this.checkTimer);
       this.checkTimer = null;
@@ -186,6 +189,22 @@ export default class LitradarPlugin extends Plugin {
   }
 
   // ------------------------------------------------------------------ settings
+
+  async saveApiKeyEnv(value: string): Promise<boolean> {
+    const name = value.trim() || DEFAULT_SETTINGS.apiKeyEnv;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      new Notice("这里填写环境变量名，例如 LITRADAR_API_KEY。密钥请配置到 llm.api_key 或 llm.api_key_file。", 8000);
+      return false;
+    }
+    // This setting used to be stored only in data.json, invisible to Python.
+    if (!await this.engineConfigSet("llm.api_key_env", name)) {
+      new Notice("环境变量名保存失败，请检查引擎状态后重试。", 6000);
+      return false;
+    }
+    await this.updateSettings({ apiKeyEnv: name });
+    new Notice("环境变量名已保存到引擎配置。", 4000);
+    return true;
+  }
 
   private async loadSettings(): Promise<void> {
     const stored = (await this.loadData()) as Partial<LitradarSettings> | null;
@@ -200,6 +219,12 @@ export default class LitradarPlugin extends Plugin {
       typeof merged.apiKeyEnv === "string" && merged.apiKeyEnv.trim()
         ? merged.apiKeyEnv.trim()
         : DEFAULT_SETTINGS.apiKeyEnv;
+    const auto = merged.autoRunState;
+    if (auto && (!/^\d{4}-\d{2}-\d{2}$/.test(auto.day)
+      || !["run", "render", "maintain"].includes(auto.action)
+      || !["running", "waiting", "done", "paused", "blocked"].includes(auto.status)
+      || !Number.isInteger(auto.attempts) || auto.attempts < 0 || auto.attempts > 3
+      || !Number.isFinite(auto.retryAt))) merged.autoRunState = undefined;
     const seconds = Number(merged.autoRefreshSeconds);
     merged.autoRefreshSeconds = Number.isFinite(seconds) ? clamp(Math.round(seconds), 0, 3600) : 30;
     merged.showLogTail = merged.showLogTail !== false;
@@ -229,6 +254,7 @@ export default class LitradarPlugin extends Plugin {
   private zoteroBridges = new Set<Bridge>();
   private zoteroMutations: Promise<void> = Promise.resolve();
   private settingsWrite: Promise<void> = Promise.resolve();
+  private configWrite: Promise<boolean> = Promise.resolve(true);
 
   private persistSettings(update: () => LitradarSettings): Promise<void> {
     const write = this.settingsWrite.catch(() => {}).then(async () => {
@@ -392,7 +418,7 @@ export default class LitradarPlugin extends Plugin {
     await this.persistSettings(() => ({ ...this.settings, ...patch }));
 
     if (previous.storeDir !== this.settings.storeDir) {
-      this.reader = new LitradarStore(this.app, this.settings.storeDir);
+      this.reader = new LitradarStore(this.app, this.settings.storeDir, () => this.engineConfig());
       this.refreshViews(true);
     }
     if (
@@ -469,42 +495,102 @@ export default class LitradarPlugin extends Plugin {
     this.autoTimer = this.autoStartTimer = null;
   }
 
+  private async saveAutoState(state: AutoRunState): Promise<void> {
+    await this.persistSettings(() => ({ ...this.settings, autoRunState: state }));
+    this.refreshViews(false);
+  }
+
+  async resumeAutoRun(): Promise<void> {
+    const state = this.settings.autoRunState;
+    if (!state || state.day !== this.today() || this.job || this.autoChecking) return;
+    await this.saveAutoState({ ...state, status: "waiting", attempts: 0, retryAt: 0, message: "等待继续" });
+    await this.maybeAutoRun();
+  }
+
   private async maybeAutoRun(): Promise<void> {
-    if (!this.settings.autoRunEnabled || this.autoTimer === null || this.job || this.engineBlocker()) return;
+    if (this.unloading || !this.settings.autoRunEnabled || this.autoTimer === null || this.job
+      || this.autoChecking || this.engineBlocker()) return;
+    this.autoChecking = true;
+    try {
+      await this.advanceAutoRun();
+    } catch (error) {
+      // A transient read or settings-write failure must not become an unhandled rejection.
+      new Notice("自动任务检查失败，将在下次检查时重试。", 6000);
+    } finally {
+      this.autoChecking = false;
+    }
+  }
+
+  private async advanceAutoRun(): Promise<void> {
     const today = this.today();
-    if (this.autoRunDay === today) return;
-
-    const runIds = await this.reader.listRunIds();
-    const latestId = runIds.length > 0 ? runIds[runIds.length - 1] : null;
-    const store = latestId ? await this.reader.readStore(latestId) : null;
-    const fetchedToday = typeof store?.scan_at === "string" && store.scan_at.slice(0, 10) === today;
-
-    if (fetchedToday) {
-      const report = latestId
-        ? await this.reader.findReport(latestId, store?.window?.end)
-        : null;
-      if (report) {
-        this.autoRunDay = today;
-        if (this.settings.autoBackfillEnabled) await this.runAction("maintain");
-        return;
+    let state = this.settings.autoRunState;
+    if (state?.day !== today) state = undefined;
+    if (state && (["done", "paused", "blocked"].includes(state.status) || state.retryAt > Date.now())) return;
+    if (state?.status === "running" && state.action === "run") {
+      const latest = await this.newestStore();
+      if (latest.store?.scan_at?.slice(0, 10) === today
+        && latest.store.journals?.some(scan => ["ok", "metadata-only", "off-cycle"].includes(scan.status))) {
+        state = { ...state, action: "render", attempts: 0, runId: latest.runId ?? undefined };
       }
-      this.autoRunDay = today;
-      new Notice("Litradar：今日已抓取但日报缺失，自动生成…", 4000);
-      await this.runAction("render");
-      return;
     }
 
-    const schedule = await this.reader.readSchedule(today, store);
-    const match = /^(\d{1,2}):(\d{2})/.exec(schedule.time.trim());
-    if (!match) return;
-    const target = Number(match[1]) * 60 + Number(match[2]);
-    const now = new Date();
-    if (now.getHours() * 60 + now.getMinutes() < target) return;
+    if (!state) {
+      const ids = await this.reader.listRunIds();
+      const runId = latestDailyRunId(ids);
+      const store = runId ? await this.reader.readStore(runId) : null;
+      const fetchedToday = store?.scan_at?.slice(0, 10) === today;
+      const usable = store?.journals?.some(scan => ["ok", "metadata-only", "off-cycle"].includes(scan.status));
+      const report = fetchedToday && runId ? await this.reader.findReport(runId, store?.window?.end) : null;
+      const schedule = await this.reader.readSchedule(today, store);
+      const match = /^(\d{1,2}):(\d{2})$/.exec(schedule.time.trim());
+      if (!match) return;
+      const now = new Date();
+      if (!fetchedToday && now.getHours() * 60 + now.getMinutes() < Number(match[1]) * 60 + Number(match[2])) return;
+      const action = fetchedToday && usable ? (report ? "maintain" : "render") : "run";
+      state = { day: today, action, status: "waiting", attempts: 0, retryAt: 0,
+        runId: runId ?? undefined, message: "等待自动任务" };
+    }
 
-    this.autoRunDay = today;
-    new Notice(`Litradar：已到计划时间 ${schedule.time}，开始自动抓取…`, 4000);
-    if (this.settings.autoBackfillEnabled) await this.runAction("maintain");
-    if (this.settings.autoRunEnabled && !this.job && this.lastOutcome?.kind !== "cancelled") await this.runAction("run");
+    while (!this.unloading && this.autoTimer !== null && this.settings.autoRunEnabled && !this.job) {
+      if (state.action === "maintain" && !this.settings.autoBackfillEnabled) {
+        await this.saveAutoState({ ...state, status: "done", message: "今日日报已完成，自动回查关闭" });
+        return;
+      }
+      if (state.attempts >= 3) {
+        await this.saveAutoState({ ...state, status: "blocked", message: "自动重试已达 3 次，可手动继续" });
+        return;
+      }
+      state = { ...state, status: "running", attempts: state.attempts + 1, retryAt: 0,
+        message: `${this.actionLabel(state.action)}（第 ${state.attempts + 1} 次）` };
+      await this.saveAutoState(state);
+      this.lastOutcome = null;
+      await this.runAction(state.action, state.action === "render" ? { runId: state.runId } : undefined);
+      if (this.unloading) return;
+      const outcome = this.lastOutcome as JobOutcome | null;
+      if (outcome?.kind !== "ok") {
+        const paused = outcome?.kind === "cancelled";
+        const blocked = state.attempts >= 3 || ["config", "enoent", "engine-missing", "screen"].includes(outcome?.kind ?? "");
+        // Fetch succeeded but rendering failed: continue from the saved batch.
+        if (!paused && !blocked && state.action === "run" && outcome?.kind === "error") {
+          const latest = await this.newestStore();
+          if (latest.store?.scan_at?.slice(0, 10) === today
+            && latest.store.journals?.some(scan => ["ok", "metadata-only", "off-cycle"].includes(scan.status))) {
+            state = { ...state, action: "render", runId: latest.runId ?? undefined };
+          }
+        }
+        await this.saveAutoState({ ...state, status: paused ? "paused" : blocked ? "blocked" : "waiting",
+          retryAt: paused || blocked ? 0 : Date.now() + 5 * 60_000 * Math.pow(3, state.attempts - 1),
+          message: paused ? "已取消，不会自动重启" : outcome?.message ?? "任务未完成，等待重试" });
+        return;
+      }
+      if (state.action === "maintain") {
+        await this.saveAutoState({ ...state, status: "done", message: "日报与自动回查均已完成" });
+        return;
+      }
+      state = { ...state, action: "maintain", status: "waiting", attempts: 0, retryAt: 0,
+        message: "日报已完成，等待回查" };
+      await this.saveAutoState(state);
+    }
   }
 
   /** Non-null exactly when engine actions must be disabled. */
@@ -572,15 +658,17 @@ export default class LitradarPlugin extends Plugin {
 
   /** Persist one setting through the engine (writes .litradar/config.local.yaml). */
   async engineConfigSet(key: string, value: string): Promise<boolean> {
-    if (!this.bridge) return false;
-    try {
-      const result = await this.bridge.probeJson(["config", "set", key, value], 8000);
-      if (result.code !== 0) return false;
-      if (key.startsWith("schedule.")) this.refreshViews(true);
-      return true;
-    } catch {
-      return false;
-    }
+    const write = this.configWrite.catch(() => false).then(async () => {
+      if (!this.bridge) return false;
+      try {
+        const result = await this.auxiliaryProbe(["config", "set", key, value], 8000);
+        if (result.code !== 0) return false;
+        this.refreshViews(true);
+        return true;
+      } catch { return false; }
+    });
+    this.configWrite = write;
+    return write;
   }
 
   private makeBridge(): void {
@@ -762,7 +850,7 @@ export default class LitradarPlugin extends Plugin {
   private async newestStore(): Promise<{ runId: string | null; store: StorePayload | null }> {
     const runIds = await this.reader.listRunIds();
     if (runIds.length === 0) return { runId: null, store: null };
-    const runId = runIds[runIds.length - 1];
+    const runId = latestDailyRunId(runIds)!;
     const store = await this.reader.readStore(runId);
     return { runId, store };
   }
@@ -779,7 +867,7 @@ export default class LitradarPlugin extends Plugin {
     }
 
     const runIds = await this.reader.listRunIds();
-    let runId = runIds.length > 0 ? runIds[runIds.length - 1] : null;
+    let runId = latestDailyRunId(runIds);
     let store: StorePayload | null = null;
     if (options?.runId) runId = options.runId;
     if (runId) store = await this.reader.readStore(runId);
@@ -1132,7 +1220,7 @@ export default class LitradarPlugin extends Plugin {
 
   async openReport(runIdArg?: string, preferredPath?: string): Promise<void> {
     const runIds = await this.reader.listRunIds();
-    const runId = runIdArg ?? (runIds.length > 0 ? runIds[runIds.length - 1] : null);
+    const runId = runIdArg ?? (latestDailyRunId(runIds));
     if (!runId) {
       new Notice("尚未抓取，暂无日报");
       return;
