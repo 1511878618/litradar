@@ -1120,6 +1120,56 @@ def cmd_zotero(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- parser
+def cmd_ideas(args: argparse.Namespace) -> int:
+    from .ideas import Ideas, analyze, zotero_candidates
+
+    ctx = make_context(args)
+    repo = Ideas(ctx.paths)
+    try:
+        action = args.idea_action
+        def payload(name, default=None):
+            value = _arg(args, name)
+            try:
+                return json.loads(value) if value is not None else default
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(f"{name} 必须是有效 JSON") from exc
+        if action == "list":
+            result = {"ideas": repo.list()}
+        elif action == "create":
+            result = repo.create(args.name, args.question)
+        elif action == "get":
+            result = repo.detail(args.idea_id)
+        elif action == "update":
+            result = repo.update(args.idea_id, payload("patch_json", {}))
+        elif action == "add":
+            result = repo.add(args.idea_id, [payload("article_json")])
+        elif action == "member":
+            result = repo.member(args.idea_id, args.paper_id, args.role, args.note, args.remove)
+        elif action in ("candidates", "import"):
+            candidates = zotero_candidates(ctx.config, args.collection)
+            if action == "candidates":
+                result = candidates
+            else:
+                ids = payload("paper_ids_json")
+                if not isinstance(ids, list) or not ids or any(not isinstance(key, str) for key in ids):
+                    raise ConfigError("请选择要导入的文献")
+                selected = [p for p in candidates["papers"] if p["id"] in ids]
+                if {p["id"] for p in selected} != set(ids):
+                    raise ConfigError("收藏夹内容已变化，请刷新列表后重选")
+                result = repo.add(args.idea_id, selected)
+        elif action == "analyze":
+            ids = payload("paper_ids_json")
+            if ids is not None and (not isinstance(ids, list) or any(not isinstance(key, str) for key in ids)):
+                raise ConfigError("paper_ids_json 必须为文献 ID 数组")
+            result = analyze(ctx, args.idea_id, ids)
+        else:
+            result = repo.analysis(args.idea_id, args.analysis_id)
+        print(json.dumps(result, ensure_ascii=False))
+        return EXIT_OK
+    finally:
+        ctx.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="litradar",
@@ -1131,6 +1181,34 @@ def build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(handler=None)
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    ideas = subparsers.add_parser("ideas", help="专题文献库与带引用的摘要级归纳")
+    add_common(ideas)
+    idea_commands = ideas.add_subparsers(dest="idea_action", required=True)
+    for action in ("list", "create", "get", "update", "add", "member", "candidates", "import", "analyze", "analysis"):
+        command = idea_commands.add_parser(action)
+        add_common(command)
+        command.set_defaults(handler=cmd_ideas)
+        if action not in ("list", "create", "candidates"):
+            command.add_argument("--idea-id", required=True)
+        if action == "create":
+            command.add_argument("--name", required=True)
+            command.add_argument("--question", default="")
+        if action == "update":
+            command.add_argument("--patch-json", required=True)
+        if action == "add":
+            command.add_argument("--article-json", required=True)
+        if action == "member":
+            command.add_argument("--paper-id", required=True)
+            command.add_argument("--role")
+            command.add_argument("--note")
+            command.add_argument("--remove", action="store_true")
+        if action in ("candidates", "import"):
+            command.add_argument("--collection", required=True)
+        if action in ("analyze", "import"):
+            command.add_argument("--paper-ids-json", required=action == "import")
+        if action == "analysis":
+            command.add_argument("--analysis-id", required=True)
 
     init = subparsers.add_parser("init", parents=[], help="在 vault 里建 .litradar 骨架")
     add_common(init)

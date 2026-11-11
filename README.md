@@ -3,9 +3,9 @@
 > 每天一份**可审计**的文献日报：期刊与预印本全量收录，相关性只决定置顶，不决定取舍。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-387%20passed-brightgreen)](tests/run_tests.py)
+[![Tests](https://img.shields.io/badge/tests-396%20passed-brightgreen)](tests/run_tests.py)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.3.0-orange)](CHANGELOG.md)
 
 [English](README.en.md) · [示例日报](examples/sample-report.md) · [期刊目录](docs/journals-catalog.md) · [新增一刊](docs/journals.md)
 
@@ -31,6 +31,7 @@ Litradar 把这三件事当成设计约束，而不是文案：
 
 ## 功能
 
+- **研究专题与 idea 文献库**：从 Zotero 或雷达收集文献，按研究问题组织角色和批注，选择 1–50 篇生成带引用的背景、研究主线及论文对照表；摘要级分析、原文依据、历史版本和失败后缓存复用。见[使用说明](docs/idea-workspaces.md)。
 - **一份日报，两类内容**：`2026-11-01.md` 内含「期刊」与「预印本（bioRxiv / medRxiv）」两节，Obsidian 日记只需管一个文件；
 - **可选拆成两个文件**：`output.split_preprints: true` 时期刊写 `2026-11-01.md`、预印本写 `2026-11-01-preprint.md`，互相链接、各自独立的覆盖表；
 - **21 本内置期刊**：Nature / Science / **Cell** 及其子刊、Nature Communications、npj Digital Medicine、The Lancet Digital Health、JAMIA、JBI、PLOS Genetics、MBE、bioRxiv、medRxiv…（[完整目录](docs/journals-catalog.md)）；

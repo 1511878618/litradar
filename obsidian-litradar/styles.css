@@ -989,3 +989,22 @@
 .litradar-more-actions[open] { flex-basis: 100%; }
 .litradar-more-actions small { display: block; color: var(--text-muted); margin: 6px 0; }
 .litradar-more-actions button { margin: 4px; }
+
+/* Question-led workspaces respect the active Obsidian theme. */
+.litradar-ideas-modal { width: min(1000px, 94vw); }
+.litradar-ideas-modal .modal-content { max-height: 78vh; overflow-y: auto; }
+.litradar-ideas-modal [role="status"] { position: sticky; top: 0; z-index: 1; padding: 10px 0; background: var(--background-primary); color: var(--text-accent); white-space: pre-wrap; }
+.litradar-idea-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+.litradar-idea-toolbar select { max-width: 100%; }
+.litradar-idea-field { display: block; margin: 16px 0; font-weight: 600; }
+.litradar-idea-field textarea, .litradar-idea-paper textarea { display: block; width: 100%; margin-top: 8px; font-weight: normal; resize: vertical; }
+.litradar-idea-import { margin: 20px 0; padding: 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; }
+.litradar-idea-candidates { max-height: 280px; overflow-y: auto; margin: 12px 0; }
+.litradar-idea-candidates label { display: flex; gap: 10px; padding: 8px; }
+.litradar-idea-paper { border-bottom: 1px solid var(--background-modifier-border); padding: 12px 0; }
+.litradar-idea-paper summary { cursor: pointer; line-height: 1.5; }
+.litradar-idea-paper summary input { margin-right: 10px; }
+.litradar-idea-paper summary small { display: block; margin-left: 24px; color: var(--text-muted); }
+.litradar-idea-paper p { overflow-wrap: anywhere; }
+.litradar-ideas-modal button { margin: 4px 8px 4px 0; }
+.litradar-ideas-entry { margin-bottom: 8px; }

@@ -4,15 +4,19 @@
 > decides what gets highlighted — never what gets included.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-387%20passed-brightgreen)](tests/run_tests.py)
+[![Tests](https://img.shields.io/badge/tests-396%20passed-brightgreen)](tests/run_tests.py)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.3.0-orange)](CHANGELOG.md)
 
 [中文说明](README.md) · [Sample report](examples/sample-report.md) · [Journal catalog](docs/journals-catalog.md)
 
 ---
 
-## What's new in 2.2.0
+## What's new in 2.3.0
+
+Obsidian plugin 0.5.0 adds question-led research workspaces. Collect papers from Zotero or the radar, keep topic-specific roles and notes, and select 1–50 papers for Chinese background synthesis, research directions and comparison tables. This first version uses abstracts, validates quoted source passages and citation IDs, caches extractions, and saves each analysis as a separate Obsidian note. See the [workspace guide](docs/idea-workspaces.md).
+
+## Previous update: 2.2.0
 
 Paired with Obsidian plugin 0.4.0 and Zotero Bridge 0.2.0: targeted retries that preserve batches, bounded backfill and late-arrival checks, paginated Crossref queries, cached Chinese titles, a cross-batch library, Zotero PDF status feedback, reversible ranking feedback, and evidence-based preprint/publication links. Schema 2 remains compatible.
 

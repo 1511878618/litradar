@@ -215,7 +215,9 @@ export class Bridge {
           const event = parseJsonLine(line);
           if (event) onEvent(event);
         }
-        if (stdout.length > STDERR_CAP) stdout = stdout.slice(-STDERR_CAP);
+        // JSON probes include selected paper abstracts and synthesis evidence.
+        const cap = onEvent ? STDERR_CAP : MAX_PENDING_LINE;
+        if (stdout.length > cap) stdout = stdout.slice(-cap);
       };
 
       timer = setTimeout(() => {

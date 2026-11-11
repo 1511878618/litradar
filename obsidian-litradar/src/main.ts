@@ -12,6 +12,7 @@ import { findReadingEntry, normalizeLibrary, type ReadingStatus, type ZoteroRead
 import type { Article } from "./types";
 import { Bridge, BridgeError } from "./bridge";
 import { LitradarSettingTab } from "./settings";
+import { IdeasModal } from "./ideas";
 import { LitradarStore, latestDailyRunId } from "./store";
 import { LitradarView, VIEW_TYPE_LITRADAR } from "./view";
 import {
@@ -30,7 +31,7 @@ import {
   type VersionPayload,
 } from "./types";
 
-export const PLUGIN_VERSION = "0.4.0";
+export const PLUGIN_VERSION = "0.5.0";
 
 const ACTION_LABELS: Record<ActionKind, string> = {
   run: "抓取并生成",
@@ -117,6 +118,11 @@ export default class LitradarPlugin extends Plugin {
       void this.activateView();
     });
 
+    this.addCommand({
+      id: "litradar-ideas",
+      name: "打开研究专题",
+      callback: () => this.openIdeas(),
+    });
     this.addCommand({
       id: "litradar-open",
       name: "打开面板",
@@ -271,6 +277,26 @@ export default class LitradarPlugin extends Plugin {
     this.zoteroBridges.add(bridge);
     try { return await bridge.probeJson(args, timeout); }
     finally { this.zoteroBridges.delete(bridge); }
+  }
+
+  openIdeas(article?: Article): void {
+    if (!this.engineReady) { new Notice("请先在设置中连接 Litradar 引擎"); return; }
+    if (compareVersions(this.engine.engine || "0", "2.3.0") < 0) { new Notice("研究专题需要 Litradar 引擎 2.3.0 或以上版本"); return; }
+    new IdeasModal(this, article).open();
+  }
+
+  async ideaCommand<T = unknown>(args: string[], timeout = 30000): Promise<T> {
+    const result = await this.auxiliaryProbe(["ideas", ...args, "--json"], timeout);
+    if (result.timedOut) throw new Error("专题任务超时；已有版本和提取缓存已保留，可以重试。");
+    if (result.cancelled) throw new Error("专题任务已取消；已有版本保留。");
+    if (result.code !== 0 || !result.json) throw new Error(tailLines(result.stderr || result.stdout, 3) || "专题命令未返回有效数据，请检查引擎版本。");
+    return result.json as T;
+  }
+
+  async openIdeaNote(path: string): Promise<void> {
+    if (!path.startsWith("02-Reading/研究专题/") || path.split("/").includes("..") || !path.endsWith(".md")) throw new Error("专题笔记路径无效");
+    if (this.resolvedVaultRoot !== this.basePath) throw new Error("专题笔记位于另一个 vault，请切换到引擎使用的 vault 后打开。");
+    await this.app.workspace.openLinkText(path, "", false);
   }
 
   private async zoteroCommand(args: string[], timeout = 20000): Promise<unknown> {

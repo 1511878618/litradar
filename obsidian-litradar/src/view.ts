@@ -571,6 +571,8 @@ export class LitradarView extends ItemView {
 
   private renderReadingAction(container: HTMLElement, article: Article, collectionDate?: string): void {
     const actions = container.createDiv({ cls: "litradar-zotero-actions" });
+    const addIdea = actions.createEl("button", {text:"加入专题"});
+    addIdea.onclick = () => this.plugin.openIdeas(article);
     const label = actions.createEl("label", { cls: "litradar-reading-action", text: "Zotero 阅读状态 " });
     const feedback = actions.createEl("select", {attr:{"aria-label":"推荐反馈"}});
     for (const [value,text] of [["","推荐反馈…"],["relevant","相关"],["irrelevant","不相关"],["less","减少这类推荐"],["clear","撤销反馈"]]) feedback.createEl("option",{value,text});
@@ -900,6 +902,8 @@ export class LitradarView extends ItemView {
   }
 
   private renderToolbar(container: HTMLElement, data: PanelData | null): void {
+    const ideas = container.createEl("button", {text:"研究专题", cls:"litradar-ideas-entry"});
+    ideas.onclick = () => this.plugin.openIdeas();
     const toolbar = container.createDiv({ cls: "litradar-toolbar" });
     const job = this.plugin.job;
     const engineBlocked = this.plugin.engineBlocker();
