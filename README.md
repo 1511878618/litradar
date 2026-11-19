@@ -3,9 +3,9 @@
 > 每天一份**可审计**的文献日报：期刊与预印本全量收录，相关性只决定置顶，不决定取舍。
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-396%20passed-brightgreen)](tests/run_tests.py)
+[![Tests](https://img.shields.io/badge/tests-406%20passed-brightgreen)](tests/run_tests.py)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.5.0-orange)](CHANGELOG.md)
 
 [English](README.en.md) · [示例日报](examples/sample-report.md) · [期刊目录](docs/journals-catalog.md) · [新增一刊](docs/journals.md)
 
@@ -31,14 +31,14 @@ Litradar 把这三件事当成设计约束，而不是文案：
 
 ## 功能
 
-- **研究专题与 idea 文献库**：从 Zotero 或雷达收集文献，按研究问题组织角色和批注，选择 1–50 篇生成带引用的背景、研究主线及论文对照表；摘要级分析、原文依据、历史版本和失败后缓存复用。见[使用说明](docs/idea-workspaces.md)。
+- **研究专题与 idea 文献库**：从 Zotero 或雷达收集文献，按研究问题组织角色和批注，选择 1–30 篇直接加入 llm-for-zotero 新对话的上下文，在 Zotero 提问并使用其 Markdown 保存功能输出到 vault。见[使用说明](docs/idea-workspaces.md)。
 - **一份日报，两类内容**：`2026-11-01.md` 内含「期刊」与「预印本（bioRxiv / medRxiv）」两节，Obsidian 日记只需管一个文件；
 - **可选拆成两个文件**：`output.split_preprints: true` 时期刊写 `2026-11-01.md`、预印本写 `2026-11-01-preprint.md`，互相链接、各自独立的覆盖表；
 - **21 本内置期刊**：Nature / Science / **Cell** 及其子刊、Nature Communications、npj Digital Medicine、The Lancet Digital Health、JAMIA、JBI、PLOS Genetics、MBE、bioRxiv、medRxiv…（[完整目录](docs/journals-catalog.md)）；
 - **按影响因子排序、按刊设定标题层级**（可在每刊 YAML 里改）；
 - **每篇文章自动打标签**（22 个受控主题），日报带 **Mermaid 主题分布图** + **SVG 词云**；
-- **LLM 提关键词 + 关键词相关性**：模型只从标题/摘要里抽 3–6 个原词，匹配你的关键词表由引擎确定性计算（`screening.keyword_weight` 可调）；
-- **置顶文章中文精读**：中文标题、研究领域、2–4 句解读、中文关键词（LLM，逐条校验，可关闭）；
+- **旧 CLI：LLM 提关键词 + 关键词相关性**：模型只从标题/摘要里抽 3–6 个原词，匹配你的关键词表由引擎确定性计算（`screening.keyword_weight` 可调）；
+- **旧 CLI：置顶文章中文精读**：中文标题、研究领域、2–4 句解读、中文关键词（LLM，逐条校验，可关闭）；
 - **感知期刊节奏**：`cadence: weekly` + `weekday` 的刊物在非出版日标「🛌 非出版日」，不冒充「无新文章」；
 - **周五自动出周报**：`weekly` 把这一周（周一~今天）的日报合并成 `2026-W45.md`，带「本周热点」（每条必须引用至少 2 篇本周论文，否则丢弃）；
 - 可选配图（第一张图 / `og:image` / 期刊封面）；
@@ -48,7 +48,7 @@ Litradar 把这三件事当成设计约束，而不是文案：
 - **幂等 + 文件锁**：同一天重跑不会覆盖已有日报，并发出退出码 6 而不是并发写坏状态；
 - **跨平台定时**：Windows 计划任务 / macOS launchd / Linux cron，默认只打印命令；
 - **可选增强**：LLM 置顶、本地 bge-m3 语义排序、Zotero 一键入库；
-- **科研画像**：`zotero profile --collections "EHR,心血管疾病" --llm` 从 Zotero 元数据归纳方向/关键词/研究问题，存到 `.litradar/profiles/`；Obsidian 设置页可勾选收藏夹一键生成；
+- **科研画像**：`zotero profile --collections "EHR,心血管疾病" --llm` 从 Zotero 元数据归纳方向/关键词/研究问题，存到 `.litradar/profiles/`；旧 CLI 可用模型；Obsidian 设置页从所选收藏夹生成本地关键词画像；
 - **可选 Obsidian 插件**：面板 + 触发按钮 + 常用设置（只需填 Python 解释器路径，方向/关键词/模型/周报日都在 Obsidian 里改），删掉它日报照常生成。
 
 ## 快速开始
@@ -74,7 +74,9 @@ litradar doctor --vault .          # 依赖 / 路径 / 每刊可达性
 litradar run --vault . --no-llm    # 先不接模型跑通
 ```
 
-接模型（以 DeepSeek flash 为例，[完整片段](examples/llm-deepseek-flash.yaml)）：
+**当前插件使用 llm-for-zotero 协作，无需在 Litradar 填写模型端点或密钥。** 见[专题流程](docs/idea-workspaces.md)。日报和重渲染不调用模型，已有中文内容可复用，独立的标题翻译仍可启用。
+
+以下直连模型配置仅为旧 CLI 脚本保留兼容（以 DeepSeek flash 为例，[完整片段](examples/llm-deepseek-flash.yaml)）：
 
 ```yaml
 llm:
@@ -99,7 +101,7 @@ litradar status --vault .          # 上次抓取、覆盖状态
 
 没有 API key、模型超时、模型返回垃圾 JSON——日报都会照常生成，只是置顶退化为关键词。
 
-Obsidian 设置中的「API key 环境变量名」只填写 `LITRADAR_API_KEY` 这样的变量名，点击「保存变量名」后同步到引擎配置。实际密钥请设置到 `.litradar/config.local.yaml` 的 `llm.api_key`，或使用 `llm.api_key_file` 指向密钥文件；将密钥填入环境变量名输入框不会生效。
+Obsidian 0.7.0 已移除模型端点、模型名及密钥配置入口；模型配置统一在 Zotero 的 llm-for-zotero 中管理。已有引擎配置不会自动删除。
 
 ## Zotero 联动安装（可选）
 

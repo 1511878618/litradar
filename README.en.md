@@ -4,17 +4,17 @@
 > decides what gets highlighted — never what gets included.
 
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-396%20passed-brightgreen)](tests/run_tests.py)
+[![Tests](https://img.shields.io/badge/tests-406%20passed-brightgreen)](tests/run_tests.py)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.3.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.5.0-orange)](CHANGELOG.md)
 
 [中文说明](README.md) · [Sample report](examples/sample-report.md) · [Journal catalog](docs/journals-catalog.md)
 
 ---
 
-## What's new in 2.3.0
+## What's new in 2.5.0
 
-Obsidian plugin 0.5.0 adds question-led research workspaces. Collect papers from Zotero or the radar, keep topic-specific roles and notes, and select 1–50 papers for Chinese background synthesis, research directions and comparison tables. This first version uses abstracts, validates quoted source passages and citation IDs, caches extractions, and saves each analysis as a separate Obsidian note. See the [workspace guide](docs/idea-workspaces.md).
+Obsidian plugin 0.7.0 sends 1–30 selected topic papers into a fresh **llm-for-zotero** conversation. Continue chatting in Zotero and use its own Markdown export, with the output folder manually set inside your vault. Zotero Bridge 0.3.0 is required; the adapter supports llm-for-zotero 3.9.17 and verifies visible paper context chips. Missing local attachments are reported per paper. No message is sent automatically and no model provider is configured in Litradar. See the [workspace guide](docs/idea-workspaces.md).
 
 ## Previous update: 2.2.0
 
@@ -41,13 +41,13 @@ The name comes from radar: scanning, coverage, and the difference between
 ## Features
 
 - **One daily file**, with **journals** and **preprints** (bioRxiv / medRxiv) as separate sections — Obsidian daily notes only need one path;
-- **Research profile from Zotero**: pick any number of collections and let the LLM synthesize a profile (falls back to keyword extraction without a key); stored under `.litradar/profiles/`;
+- **Research profile from Zotero**: select collections for a local keyword profile in Obsidian (legacy CLI model synthesis remains available); stored under `.litradar/profiles/`;
 - **Optional two-file mode**: `output.split_preprints: true` writes `2026-11-01.md` and a linked `2026-11-01-preprint.md`;
 - **21 journals built in** (Nature / Science / **Cell** and their titles, Nature Communications, npj Digital Medicine, The Lancet Digital Health, JAMIA, JBI, PLOS Genetics, MBE, preprints…);
 - **Impact-factor ordering** and per-journal heading levels, editable per YAML;
 - **Automatic topic tags** for every article, a **Mermaid topic chart** and an **SVG word cloud**;
-- **LLM keyword extraction + deterministic keyword relevance**: the model only extracts 3–6 terms; matching against your keyword list is computed by the engine (`screening.keyword_weight`);
-- **Chinese deep-read for highlights**: translated title, field, a 2–4 sentence digest and keywords (LLM, validated per item, can be turned off);
+- **Legacy CLI: LLM keyword extraction + deterministic keyword relevance**: the model only extracts 3–6 terms; matching against your keyword list is computed by the engine (`screening.keyword_weight`);
+- **Legacy CLI: Chinese deep-read for highlights**: translated title, field, a 2–4 sentence digest and keywords (LLM, validated per item, can be turned off);
 - **Per-journal cadence**: weekly journals show "🛌 not a publishing day" outside their weekday instead of pretending "no new articles";
 - **Friday weekly recap**: merges this week's (Mon–today) daily reports into `2026-W45.md` with "this week's trends" — each trend must cite at least two of the week's papers or it is dropped;
 - Optional figures (first figure / `og:image` / cover);

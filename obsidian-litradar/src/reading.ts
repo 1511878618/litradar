@@ -44,7 +44,20 @@ export interface ZoteroReadingEntry {
   article: Article;
   updatedAt: string;
   selectUrl: string;
-  pdfs: Array<{ key: string; url: string }>;
+  pdfs: Array<{ key: string; url: string; available?: boolean | null }>;
+  pdfChecked?: boolean;
+  pdfError?: string;
+  downloading?: boolean;
+}
+
+export function fulltextState(entry?: ZoteroReadingEntry): {label: string; action: "inspect" | "download" | "pdf"; tone: string} {
+  if (!entry) return {label:"全文尚未检查",action:"inspect",tone:"unknown"};
+  if (entry.downloading) return {label:"Zotero 正在查找全文",action:"inspect",tone:"pending"};
+  if (entry.pdfs?.some(pdf=>pdf.available === true)) return {label:"本地 PDF 可读",action:"pdf",tone:"ready"};
+  if (entry.pdfs?.length) return entry.pdfChecked
+    ? {label:"PDF 尚未下载到本机",action:"pdf",tone:"missing"}
+    : {label:"已收录 PDF · 本机文件未确认",action:"pdf",tone:"unknown"};
+  return {label:entry.key ? "尚无 PDF 附件" : "尚未入库",action:"download",tone:"missing"};
 }
 export interface ZoteroCollection {
   key: string;

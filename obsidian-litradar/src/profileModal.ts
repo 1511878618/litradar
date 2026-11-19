@@ -29,6 +29,7 @@ export class ProfileBuilderModal extends Modal {
   }
 
   async onOpen(): Promise<void> {
+    this.modalEl.addClass("litradar-profile-modal");
     this.titleEl.setText("从 Zotero 生成科研关键词");
     this.contentEl.createEl("p", {
       cls: "litradar-modal-desc",

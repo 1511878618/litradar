@@ -1,6 +1,6 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),ts=require('../node_modules/typescript');
 const cache={};
-function load(name){if(cache[name])return cache[name];const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(`src/${name}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2018}}).outputText,{exports,window:{setTimeout:callback=>{callback();return 1;}},require:dep=>dep==='obsidian'?{Plugin:class{},PluginSettingTab:class{},Modal:class{},ItemView:class{},Notice:class{},FileSystemAdapter:class{},TFile:class{}}:dep.startsWith('./')?load(dep.slice(2)):require(dep)});return cache[name]=exports;}
+function load(name){if(cache[name])return cache[name];const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(`src/${name}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2018}}).outputText,{exports,window:{setTimeout:callback=>{callback();return 1;}},require:dep=>dep==='obsidian'?{Plugin:class{},PluginSettingTab:class{},Modal:class{},FuzzySuggestModal:class{},ItemView:class{},Notice:class{},FileSystemAdapter:class{},TFile:class{}}:dep.startsWith('./')?load(dep.slice(2)):require(dep)});return cache[name]=exports;}
 (async()=>{
  const {latestDailyRunId}=load('store');
  assert.equal(latestDailyRunId(['2026-11-02','2026-11-07','2026-W45']),'2026-11-07');

@@ -197,3 +197,20 @@ def test_cli_ideas_roundtrip_and_invalid_json_are_explicit():
         assert result["idea"]["question"] == "背景是什么？"
         assert cli("add", "--idea-id", idea["id"], "--article-json", "broken")[0] == 2
         ctx.close()
+
+
+def test_batch_add_undo_preserves_existing_and_edited_members():
+    with temp_dir() as tmp:
+        ctx = make_context(tmp)
+        repo, idea_id = setup(ctx)
+        old = repo.detail(idea_id)
+        existing_id = old['papers'][0]['id']
+        result = repo.add(idea_id, [old['papers'][0], {'title': 'New paper A'}, {'title': 'New paper B'}])
+        assert existing_id not in result['added'] and len(result['added']) == 2
+        edited = next(iter(result['added']))
+        repo.member(idea_id, edited, note='Later edit')
+        receipt = repo.undo_add(idea_id, result['added'])
+        assert receipt == {'removed': 1, 'preserved': 1}
+        assert set(repo.get(idea_id)['members']) == {existing_id, edited}
+        assert repo.get(idea_id)['members'][edited]['note'] == 'Later edit'
+        ctx.close()

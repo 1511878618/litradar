@@ -1,11 +1,8 @@
 /**
  * Settings tab. Only configuration lives here.
  *
- * The plugin never handles the API key: the engine reads it from
- * `.litradar/config.yaml` (`llm.api_key` / `llm.api_key_file`) or from the
- * environment variable named by `apiKeyEnv`. Plugin settings persist through
- * Obsidian's own `data.json`; research settings are written by the *engine* into
- * `.litradar/config.local.yaml` (so `config.yaml` keeps its comments).
+ * Model configuration, PDF reading and analysis are owned by llm-for-zotero.
+ * Research settings are written by the engine into config.local.yaml.
  */
 
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
@@ -25,15 +22,18 @@ export class LitradarSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("litradar-settings");
 
-    containerEl.createEl("h2", { text: "Litradar 设置" });
-    containerEl.createEl("p", {
+    const intro = containerEl.createDiv({ cls: "litradar-settings-hero" });
+    intro.createDiv({ cls: "litradar-eyebrow", text: "LITRADAR / 偏好设置" });
+    intro.createEl("h2", { text: "让文献雷达适合你的节奏" });
+    intro.createEl("p", {
       cls: "litradar-settings-intro",
-      text:
-        "本插件是本地 Python 引擎的薄前端：只读 .litradar 下的 JSON，" +
-        "不联网、不加载远程代码、不写 seen.json / store/ / 日报。",
+      text: "设置研究方向、每日抓取时间和阅读偏好。文献与日报保存在你的 vault 中。",
     });
 
     this.renderEngineStatus(containerEl);
+    new Setting(containerEl).setName("Zotero 连接状态")
+      .setDesc("分别检查 Zotero、Reading List、讨论插件与桥接版本，查看具体处理步骤。")
+      .addButton(button=>button.setButtonText("检查连接").onClick(()=>this.plugin.openConnections()));
     const scheduleEl = containerEl.createDiv();
     void this.renderScheduleSettings(scheduleEl);
 
@@ -91,32 +91,10 @@ export class LitradarSettingTab extends PluginSettingTab {
         text.inputEl.spellcheck = false;
       });
 
-    let apiKeyEnv = /^[A-Za-z_][A-Za-z0-9_]*$/.test(this.plugin.settings.apiKeyEnv)
-      ? this.plugin.settings.apiKeyEnv : "";
     new Setting(containerEl)
-      .setName("API key 环境变量名（可选）")
-      .setDesc(
-        "这里只填变量名，例如 LITRADAR_API_KEY，不能填密钥。保存后写入引擎 llm.api_key_env。" +
-          "密钥可在 .litradar/config.local.yaml 设置 llm.api_key，或用 llm.api_key_file 指向密钥文件；这些设置优先于环境变量。",
-      )
-      .addText((text) => {
-        text
-          .setPlaceholder("LITRADAR_API_KEY")
-          .setValue(apiKeyEnv)
-          .onChange((value) => {
-            apiKeyEnv = value.trim();
-          });
-        text.inputEl.spellcheck = false;
-        text.inputEl.autocomplete = "off";
-      })
-      .addButton((button) => button.setButtonText("保存变量名").onClick(async () => {
-        button.setDisabled(true);
-        try {
-          await this.plugin.saveApiKeyEnv(apiKeyEnv);
-        } finally {
-          button.setDisabled(false);
-        }
-      }));
+      .setName("文献分析 · llm-for-zotero")
+      .setDesc("在 Zotero 的 llm-for-zotero 设置中管理模型与文件笔记目录。Litradar 将专题文献附加到新对话；问答与 Markdown 保存使用 llm-for-zotero 自己的功能，请手动将输出目录设到 vault 下，无需填写 API key。日报使用本地关键词排序，中文标题翻译仍可单独启用。")
+      .addButton(button => button.setButtonText("打开研究专题").onClick(() => this.plugin.openIdeas()));
 
     new Setting(containerEl).setName("面板").setHeading();
 
@@ -191,7 +169,7 @@ export class LitradarSettingTab extends PluginSettingTab {
       );
   }
 
-  /** Zotero → LLM profile: check collections, generate, store under .litradar/profiles/. */
+  /** Zotero → keyword profile: check collections, generate, store under .litradar/profiles/. */
   private async renderProfileBuilder(containerEl: HTMLElement): Promise<void> {
     new Setting(containerEl).setName("科研画像").setHeading();
     containerEl.createEl("p", {
@@ -266,7 +244,7 @@ export class LitradarSettingTab extends PluginSettingTab {
     const status = containerEl.createEl("p", { cls: "litradar-profile-status" });
     new Setting(containerEl)
       .setName("生成画像")
-      .setDesc("调用模型归纳所选收藏夹；没有 API key 或模型失败时自动退回关键词画像。")
+      .setDesc("从所选收藏夹的元数据提取本地关键词画像，不调用模型。需要跨文献归纳时使用研究专题中的 llm-for-zotero 协作。")
       .addButton((button) => {
         button.setButtonText("生成画像").onClick(async () => {
           const names = Array.from(selected);
@@ -374,57 +352,6 @@ export class LitradarSettingTab extends PluginSettingTab {
         area.setDisabled(profileActive);
         area.inputEl.rows = 3;
         area.inputEl.addClass("litradar-settings-wide");
-      });
-
-    const weight = read("screening.keyword_weight");
-    new Setting(containerEl)
-      .setName("关键词权重")
-      .setDesc("0–1：相关性里关键词命中的占比（0=只看模型，1=只看关键词）。")
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.inputEl.min = "0";
-        text.inputEl.max = "1";
-        text.inputEl.step = "0.1";
-        text
-          .setValue(typeof weight === "number" ? String(weight) : "0.5")
-          .onChange(debounced("screening.keyword_weight", () => text.getValue() || "0.5"));
-      });
-
-    const baseUrl = read("llm.base_url");
-    new Setting(containerEl)
-      .setName("模型端点")
-      .setDesc("OpenAI 兼容的 /v1 地址。")
-      .addText((text) => {
-        text
-          .setPlaceholder("https://api.deepseek.com/v1")
-          .setValue(typeof baseUrl === "string" ? baseUrl : "")
-          .onChange(debounced("llm.base_url", () => text.getValue().trim()));
-        text.inputEl.spellcheck = false;
-      });
-
-    const model = read("llm.model");
-    new Setting(containerEl)
-      .setName("模型")
-      .setDesc("OpenAI 兼容端点的模型名，例如 deepseek-chat / deepseek-flash。")
-      .addText((text) => {
-        text
-          .setPlaceholder("deepseek-chat")
-          .setValue(typeof model === "string" ? model : "")
-          .onChange(debounced("llm.model", () => text.getValue().trim()));
-        text.inputEl.spellcheck = false;
-      });
-
-    const deepreadMax = read("deepread.max_items");
-    new Setting(containerEl)
-      .setName("精读篇数")
-      .setDesc("置顶里做中文精读的篇数；0 = 关闭。")
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.inputEl.min = "0";
-        text.inputEl.max = "30";
-        text
-          .setValue(typeof deepreadMax === "number" ? String(deepreadMax) : "8")
-          .onChange(debounced("deepread.max_items", () => text.getValue() || "0"));
       });
 
     new Setting(containerEl)

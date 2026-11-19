@@ -27,6 +27,7 @@ def test_shell_wrapper_contains_the_run_command():
         assert path.name == "run-daily.sh"
         assert "-m litradar run" in content
         assert "--catch-up" in content
+        assert "--no-llm" in content and " --llm " not in content
         assert str(tmp.resolve()) in content
         assert "/usr/bin/python3" in content
         assert content.startswith("#!/bin/sh")
@@ -44,6 +45,7 @@ def test_windows_wrapper():
             assert "chcp 65001" in content
             assert "cd /d" in content
             assert "%ERRORLEVEL%" in content
+            assert "--no-llm" in content and " --llm " not in content
         finally:
             schedule.platform_key = original
 

@@ -180,20 +180,34 @@ def item_view(api: LocalAPI, row: dict, *, with_pdf: bool = False) -> dict:
     key = str(row.get("key") or data.get("key") or "")
     status = reading_status(data.get("extra", ""))
     pdfs = []
+    availability = {}
+    pdf_checked = False
+    pdf_error = ""
+    downloading = False
     if with_pdf:
+        try:
+            files = api.get(f"/api/users/0/litradar/files?key={key}")
+            if isinstance(files, dict) and files.get("key") == key and isinstance(files.get("files"), list):
+                availability = {f["key"]: f.get("available") is True for f in files["files"]}
+                pdf_checked = True
+                downloading = files.get("downloading") is True
+        except ZoteroUnavailable as exc:
+            pdf_error = "请升级 Zotero Bridge 至 0.3.1，以检查本地全文" if "HTTP 404" in str(exc) else str(exc)
         children = api.get(f"/api/users/0/items/{key}/children") or []
         for child in children:
             child_data = _data(child)
             if child_data.get("contentType") == "application/pdf":
                 pdf_key = str(child.get("key") or child_data.get("key") or "")
                 if pdf_key and child_data.get("linkMode") != "linked_url":
-                    pdfs.append({"key": pdf_key, "url": f"zotero://open-pdf/library/items/{pdf_key}"})
+                    pdfs.append({"key": pdf_key, "url": f"zotero://open-pdf/library/items/{pdf_key}",
+                                 "available": availability.get(pdf_key) if pdf_checked else None})
     article = Article(title=str(data.get("title") or ""), journal=str(data.get("publicationTitle") or ""),
         doi=data.get("DOI"), url=str(data.get("url") or ""), abstract_raw=data.get("abstractNote"),
         authors=[" ".join(filter(None, [creator.get("firstName"), creator.get("lastName")])) or str(creator.get("name") or "")
                  for creator in data.get("creators") or [] if creator.get("creatorType") == "author"])
     return {"key": key, "status": status, "article": article.to_dict(),
-            "updatedAt": data.get("dateModified", ""), "selectUrl": f"zotero://select/library/items/{key}", "pdfs": pdfs}
+            "updatedAt": data.get("dateModified", ""), "selectUrl": f"zotero://select/library/items/{key}", "pdfs": pdfs,
+            "pdfChecked": pdf_checked, "pdfError": pdf_error, "downloading": downloading}
 
 
 READING_ENDPOINT = "/api/users/0/litradar/reading"

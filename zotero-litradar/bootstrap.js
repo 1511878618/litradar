@@ -3,10 +3,14 @@ var endpointPath = "/api/users/:userID/litradar/pdf";
 var endpointClass;
 var downloading = new Set();
 
-async function startup({ rootURI }) {
+async function startup({ rootURI, version }) {
   await Zotero.initializationPromise;
   Services.scriptloader.loadSubScript(rootURI + "reading-list.js", this);
   registerReadingEndpoint();
+  Services.scriptloader.loadSubScript(rootURI + "llm-context.js", this);
+  registerLLMContextEndpoint();
+  Services.scriptloader.loadSubScript(rootURI + "health.js", this);
+  registerHealthEndpoints(version);
   endpointClass = class extends Zotero.Server.LocalAPI.Items {
     supportedMethods = ["POST"];
     supportedDataTypes = ["application/json"];
@@ -42,6 +46,8 @@ async function startup({ rootURI }) {
 }
 
 function shutdown() {
+  if (typeof unregisterHealthEndpoints === "function") unregisterHealthEndpoints();
+  if (typeof unregisterLLMContextEndpoint === "function") unregisterLLMContextEndpoint();
   if (typeof unregisterReadingEndpoint === "function") unregisterReadingEndpoint();
   if (Zotero.Server.Endpoints[endpointPath] === endpointClass) {
     delete Zotero.Server.Endpoints[endpointPath];

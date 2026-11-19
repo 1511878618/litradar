@@ -1,48 +1,34 @@
-# 研究专题：从文献到 idea
+# 研究专题与 llm-for-zotero
 
-引擎 2.3.0 / Obsidian 插件 0.5.0 提供第一版摘要级专题工作空间。
+引擎 2.5.0 / Obsidian 0.7.0 / Zotero Bridge 0.3.0。
 
-## 日常使用
+Litradar 负责收集文献、组织专题、记录研究问题和个人批注；[llm-for-zotero](https://yilewang.github.io/llm-for-zotero/zh/) 负责阅读、对话与 Markdown 保存。
 
-1. 在雷达面板点击「研究专题」，或执行「Litradar: 打开研究专题」命令，新建专题。
-2. 填写「我想弄清什么」和「我的想法」，点击保存。
-3. 展开 Zotero 导入入口，加载收藏夹、读取文献、勾选并导入。每次显示收藏夹前 100 项中的文献；较大的收藏夹会明确提示范围。也可以在日报面板、跨批次文献库的文章上点击「加入专题」。
-4. 展开专题中的论文，为它选择「背景／方法／支持证据／不同结论／待判断」，记录并保存关联批注。
-5. 选择 1–50 篇，点击生成。所选论文的标题、摘要、研究问题和已保存的个人批注将发送给配置的模型。
-6. 查看生成的 Obsidian 笔记：背景脉络、研究主线、共同点与分歧、与研究问题的关系、下一步待验证问题，以及逐篇对照表。
+## 使用流程
 
-同一篇论文可以属于多个专题，各自保留不同的角色和批注。相同 DOI 复用一个文献记录。从专题移出只解除归属，保留文献记录、Zotero 条目和历史分析。重新导入可更新文献元数据，已有分析使用的材料快照不变。
+1. 打开 Zotero 10，启用本地 API（设置 → 高级 → 允许其他应用程序通信），安装本仓库的 Zotero Bridge 0.3.0，并启用 llm-for-zotero **3.9.17**。
+2. 在 Obsidian 运行「Litradar: 打开研究专题」，从雷达或 Zotero 收藏夹加入论文，整理角色与个人批注。
+3. 选择 1–30 篇，点击「在 Zotero 中讨论所选文献」。首次写入时在 Zotero 授权。已有条目直接复用；未入库文献先创建 Zotero 条目，不创建每次任务收藏夹。
+4. llm-for-zotero 打开新对话，将有本地全文附件的条目作为上下文。Litradar 显示每篇的附加结果；没有附件的条目需先在 Zotero 补充 PDF 或其支持的其他附件。
+5. 在 Zotero 直接提问，例如「比较这些文章的背景、研究路线、核心证据与尚未解决的问题」。专题问题与批注保留在 Litradar，本版本不自动发送任何消息。
+6. 使用 llm-for-zotero 自己的 Markdown 保存功能，手动将文件笔记/输出目录设为 vault 下的文件夹，例如 `Tingfeng_KB/02-Reading/研究专题`。保存后 Obsidian 按普通 Markdown 笔记展示，无需返回 Litradar 收回结果。
 
-## 引用、覆盖与版本
+## 附加成功的含义
 
-第一版读取标题和摘要，不读取 PDF 全文。没有摘要的条目仍列在报告中，并明确标记未用于归纳。摘要过长也会提示并跳过，不悄悄裁剪证据。专题超过 50 篇时需要选择一个子集，不自动截断。
+桥接使用 llm-for-zotero 原生添加上下文命令，核对新会话的文献标签和库身份；仅打开窗口不算成功。附加成功表示文献已成为上下文候选，不表示模型已读取全部全文或完成归纳。实际阅读与引用由 llm-for-zotero 管理。
 
-逐篇提取包括背景、问题、方法、发现和局限，每个有内容的字段须附源文本中可找到的原文片段。模型综合只能引用本次成功提取的文献。报告中的 P1/P2 链接指向同一笔记的论文证据段，并提供 DOI、原始摘要及 Zotero 条目链接（可用时）。这会检查引用归属和原文是否存在，不能自动证明每个推论的语义正确。未说明的信息明确留空；后续问题是待验证假设，不等同于已经证明的研究空白。
+单次最多 30 篇。缺少本地附件的条目不会伪装为已加入；未知附件格式或会话未就绪时显示未确认。部分成功时保留成功会话，并列出未成功的文献。如果通信中断，请先检查 Zotero 会话再重试，避免重复开会话。
 
-每次分析另存 `02-Reading/研究专题/<专题ID>/归纳-<分析ID>.md`。你可以在生成笔记中继续写批注，下一次生成不会覆盖该笔记。工作空间内的个人想法也不会被模型改写。历史入口可打开任意版本。
+此入口是针对 3.9.17 原生菜单和上下文界面的版本适配器，不是上游公开的通用 LLM API。检测到其他版本或结构变化会停止并提示更新适配。它不读取模型密钥、不发送消息、不抓取回答、不更改 Markdown 输出路径。
 
-## 缓存和失败恢复
+## 兼容与数据
 
-每五篇为一组提取。缓存与论文内容、模型端点、模型名和提示版本绑定；更换模型或摘要后重新提取。修改研究问题时可复用逐篇信息，但重新进行跨论文归纳。失败不会登记为完成，旧版本保持可用，已完成提取在重试时复用。关闭插件会终止其启动的任务。
+旧版专题、批注、归纳和协作任务文件原样保留。有归纳结果时可在「旧版归纳记录」打开。旧版 CLI `handoff/sync/receive` 保留兼容，面板不再提供这些步骤；独立 CLI 的旧模型命令同样保留，但面板不会调用。
 
-## CLI
+Obsidian 日报和重渲染使用 `--no-llm`，科研画像使用本地关键词，中文标题翻译仍可单独启用。
 
-```bash
-litradar ideas create --name "临床预测方法" --question "有哪些数据和方法可以借鉴？" --vault /path/to/vault
-litradar ideas list --vault /path/to/vault
-litradar ideas get --idea-id TOPIC_ID --vault /path/to/vault
-litradar ideas candidates --collection ZOTERO_COLLECTION_KEY --vault /path/to/vault
-litradar ideas import --idea-id TOPIC_ID --collection ZOTERO_COLLECTION_KEY --paper-ids-json '["PAPER_ID"]' --vault /path/to/vault
-litradar ideas analyze --idea-id TOPIC_ID --paper-ids-json '["PAPER_ID"]' --vault /path/to/vault
+专题资料位于 `.litradar/research/ideas` 和 `papers`。新入口只更新文献的 Zotero 身份，不生成分析任务或结果副本。跨专题的同一论文会复用 Zotero 条目。
+
+```sh
+litradar ideas discuss --vault /path/to/vault --idea-id TOPIC_ID --paper-ids-json '["PAPER_ID"]'
 ```
-
-## 数据约定
-
-新增数据使用独立 `format: 1`，现有日报 schema 仍为 2：
-
-- `.litradar/research/papers/<ID>.json`：共用文献记录，按 DOI（缺失时使用文献指纹）去重。
-- `ideas/<ID>.json`：专题名称、问题、个人想法、文献归属与角色批注、分析历史索引。
-- `extractions/<内容哈希>.json`：可复用的逐篇提取。
-- `analyses/<专题ID>/<分析ID>.json`：本次论文、问题、批注、模型、覆盖、用量和分析结果快照。
-
-写入由引擎完成，使用独立研究锁；模型调用期间释放资料锁，每个专题另有分析锁避免重复执行。快照让分析过程中新增或修改专题资料也不会改变正在生成的版本。

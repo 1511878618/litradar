@@ -13,8 +13,8 @@ const assert = require('node:assert/strict');
     Attachments: { addAvailableFiles: async items => { assert.equal(items[0], item); calls++; } },
     logError: error => { throw error; },
   };
-  const context = { Zotero, Services: { scriptloader: { loadSubScript() {
-    vm.runInContext(fs.readFileSync('../zotero-litradar/reading-list.js','utf8'),context);
+  const context = { Zotero, Services: { scriptloader: { loadSubScript(path) {
+    vm.runInContext(fs.readFileSync('../zotero-litradar/'+path.split('/').pop(),'utf8'),context);
   } } } };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync('../zotero-litradar/bootstrap.js', 'utf8'), context);

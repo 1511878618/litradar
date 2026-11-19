@@ -64,7 +64,7 @@ def write_wrapper(vault: Path | str, cfg: Config, python_exe: str | None = None)
     if timezone:
         extra = ""  # the engine reads schedule.tz from config; kept for readability
     args = (
-        f'-m litradar run --vault "{vault}" --window yesterday --llm --jsonl '
+        f'-m litradar run --vault "{vault}" --window yesterday --no-llm --jsonl '
         f"--catch-up --max-days 3{extra}"
     )
     if platform_key() == "win32":
@@ -140,8 +140,7 @@ def print_commands(vault: Path | str, cfg: Config) -> list[str]:
     if key == "win32":
         return [
             f"wrote {wrapper}",
-            "提示：把 `set LITRADAR_API_KEY=sk-...` 写进 "
-            "%USERPROFILE%\\.config\\litradar\\env.cmd（不要放进 vault）",
+            "提示：定时日报使用本地排序；文献分析请在 llm-for-zotero 完成",
             'schtasks /Create /TN "Litradar Daily" /SC DAILY /ST '
             f'{hour:02d}:{minute:02d} /F /TR "\\"{wrapper}\\""',
             'schtasks /Query /TN "Litradar Daily" /FO LIST',
@@ -149,14 +148,14 @@ def print_commands(vault: Path | str, cfg: Config) -> list[str]:
     if key == "darwin":
         return [
             f"wrote {wrapper}",
-            '提示：把 export LITRADAR_API_KEY=sk-... 写进 ~/.config/litradar/env（chmod 600，别放进 vault）',
+            "提示：定时日报使用本地排序；文献分析请在 llm-for-zotero 完成",
             f"plist: {mac_plist_path()}",
             f'launchctl bootstrap gui/$(id -u) "{mac_plist_path()}"',
             f'launchctl list | grep {MAC_LABEL}',
         ]
     return [
         f"wrote {wrapper}",
-        "提示：把 export LITRADAR_API_KEY=sk-... 写进 ~/.config/litradar/env（chmod 600，别放进 vault）",
+        "提示：定时日报使用本地排序；文献分析请在 llm-for-zotero 完成",
         f'crontab -l | grep -v litradar | {{ cat; echo \'{cron_line(wrapper, cfg)}\'; }} | crontab -',
     ]
 

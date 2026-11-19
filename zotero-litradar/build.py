@@ -22,7 +22,7 @@ assert settings['strict_max_version'] == '10.0.*'
 (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + '\n')
 artifact = root / f"litradar-pdf-bridge-{manifest['version']}.xpi"
 with zipfile.ZipFile(artifact, 'w', zipfile.ZIP_DEFLATED) as archive:
-    for name in ('manifest.json', 'bootstrap.js', 'reading-list.js'):
+    for name in ('manifest.json', 'bootstrap.js', 'reading-list.js', 'llm-context.js', 'health.js'):
         archive.write(root / name, name)
 with zipfile.ZipFile(artifact) as archive:
     assert archive.testzip() is None

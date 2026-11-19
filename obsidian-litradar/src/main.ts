@@ -8,11 +8,14 @@
  */
 
 import { FileSystemAdapter, Notice, Plugin, WorkspaceLeaf } from "obsidian";
-import { findReadingEntry, normalizeLibrary, type ReadingStatus, type ZoteroReadingEntry, type ZoteroCollection, type ReadingListStatusOption } from "./reading";
+import { findReadingEntry, fulltextState, normalizeLibrary, type ReadingStatus, type ZoteroReadingEntry, type ZoteroCollection, type ReadingListStatusOption } from "./reading";
 import type { Article } from "./types";
 import { Bridge, BridgeError } from "./bridge";
 import { LitradarSettingTab } from "./settings";
 import { IdeasModal } from "./ideas";
+import { ExperienceStore, friendlyError, type DiscussionTask, type ContextReceipt } from "./experience";
+import { ConnectionModal, type Diagnosis } from "./connections";
+import { QuickIdeaModal } from "./quickIdeas";
 import { LitradarStore, latestDailyRunId } from "./store";
 import { LitradarView, VIEW_TYPE_LITRADAR } from "./view";
 import {
@@ -31,7 +34,7 @@ import {
   type VersionPayload,
 } from "./types";
 
-export const PLUGIN_VERSION = "0.5.0";
+export const PLUGIN_VERSION = "0.8.0";
 
 const ACTION_LABELS: Record<ActionKind, string> = {
   run: "抓取并生成",
@@ -96,6 +99,10 @@ export default class LitradarPlugin extends Plugin {
   lastOutcome: JobOutcome | null = null;
   doctor: DoctorPayload | null = null;
   reader!: LitradarStore;
+  experience!: ExperienceStore;
+  connections: Diagnosis | null = null;
+  private connectionCheck: Promise<void> | null = null;
+  private discussionListeners = new Set<() => void>();
 
   private bridge!: Bridge;
   private listeners = new Set<() => void>();
@@ -109,6 +116,7 @@ export default class LitradarPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.experience = new ExperienceStore(this.app);
     this.reader = new LitradarStore(this.app, this.settings.storeDir, () => this.engineConfig());
     this.engine = { state: "unknown", interpreter: this.settings.pythonPath };
     this.makeBridge();
@@ -118,6 +126,11 @@ export default class LitradarPlugin extends Plugin {
       void this.activateView();
     });
 
+    this.addCommand({
+      id: "litradar-connections",
+      name: "检查 Zotero 连接状态",
+      callback: () => this.openConnections(),
+    });
     this.addCommand({
       id: "litradar-ideas",
       name: "打开研究专题",
@@ -255,6 +268,7 @@ export default class LitradarPlugin extends Plugin {
   zoteroStatuses: ReadingListStatusOption[] = [];
   zoteroLegacyCount = 0;
   zoteroError = "";
+  zoteroSyncedAt = "";
   private zoteroLoadedAt = 0;
   private zoteroRefresh: Promise<void> | null = null;
   private zoteroBridges = new Set<Bridge>();
@@ -281,13 +295,75 @@ export default class LitradarPlugin extends Plugin {
 
   openIdeas(article?: Article): void {
     if (!this.engineReady) { new Notice("请先在设置中连接 Litradar 引擎"); return; }
-    if (compareVersions(this.engine.engine || "0", "2.3.0") < 0) { new Notice("研究专题需要 Litradar 引擎 2.3.0 或以上版本"); return; }
-    new IdeasModal(this, article).open();
+    if (compareVersions(this.engine.engine || "0", "2.5.0") < 0) { new Notice("Zotero 专题协作需要 Litradar 引擎 2.5.0 或以上版本"); return; }
+    if (article) new QuickIdeaModal(this, [article]).open();
+    else new IdeasModal(this).open();
+  }
+
+  openConnections(): void { new ConnectionModal(this).open(); }
+
+  checkConnections(): Promise<void> {
+    if (this.connectionCheck) return this.connectionCheck;
+    this.connectionCheck = (async () => {
+      this.connections = null;
+      const result = await this.auxiliaryProbe(["zotero", "diagnose", "--json"], 25000);
+      if (result.code !== 0 || !Array.isArray((result.json as Diagnosis)?.checks)) throw new Error("连接检测未完成，请确认 Litradar 引擎已更新并可用。");
+      this.connections = result.json as Diagnosis;
+      if (this.connections.checks.find(check => check.id === "reading")?.state === "ok") await this.refreshZoteroReading(true);
+      this.refreshViews(false);
+    })().finally(() => { this.connectionCheck = null; });
+    return this.connectionCheck;
+  }
+
+  subscribeDiscussions(listener: () => void): () => void {
+    this.discussionListeners.add(listener);
+    return () => this.discussionListeners.delete(listener);
+  }
+
+  async startDiscussion(ideaId: string, name: string, paperIds: string[]): Promise<DiscussionTask> {
+    if (this.experience.data.tasks.some(task => task.state === "running")) throw new Error("已有讨论任务正在准备，请在任务记录中查看进度。");
+    const now = new Date().toISOString();
+    const task: DiscussionTask = { id: now, ideaId, name, createdAt: now, updatedAt: now, paperIds: [...paperIds],
+      state: "running", phase: "检查连接", completed: 0, total: paperIds.length };
+    this.experience.data.tasks = [task, ...this.experience.data.tasks].slice(0, 20);
+    const publish = () => {
+      task.updatedAt = new Date().toISOString();
+      this.experience.save();
+      this.discussionListeners.forEach(listener => listener());
+      this.refreshViews(false);
+    };
+    publish();
+    const bridge = new Bridge({ pythonPath: this.settings.pythonPath, vaultRoot: this.resolvedVaultRoot });
+    this.zoteroBridges.add(bridge);
+    try {
+      const result = await bridge.run(["ideas", "discuss", "--idea-id", ideaId, "--paper-ids-json", JSON.stringify(paperIds)], 4 * 60 * 1000, event => {
+        const value = event as unknown as { event: string; phase: string; completed: number; total: number; receipt: ContextReceipt };
+        if (value.event === "context_progress") {
+          if(task.phase===value.phase && task.completed===value.completed && task.total===value.total)return;
+          task.phase = value.phase; task.completed = value.completed; task.total = value.total; publish();
+        } else if (value.event === "context_result") task.receipt = value.receipt;
+      });
+      if (result.timedOut || result.cancelled) {
+        task.state = "interrupted";
+        task.phase = "任务中断，请先在 Zotero 核对会话；本次未自动重发";
+      } else if (result.code !== 0 || !task.receipt) {
+        task.state = "failed";
+        task.error = friendlyError(tailLines(result.stderr || result.stdout, 3) || "未收到 Zotero 回执");
+        task.phase = "未完成，请查看详情";
+      } else {
+        task.state = "finished";
+        task.completed = task.receipt.items.filter(row => row.status === "attached").length;
+        task.phase = `已确认附加 ${task.completed}/${task.total} 篇${task.completed ? "，请在 Zotero 继续提问" : "，请查看附件提示"}`;
+      }
+    } catch (error) {
+      task.state = "failed"; task.error = friendlyError(error); task.phase = "未完成，请查看详情";
+    } finally { this.zoteroBridges.delete(bridge); publish(); }
+    return task;
   }
 
   async ideaCommand<T = unknown>(args: string[], timeout = 30000): Promise<T> {
     const result = await this.auxiliaryProbe(["ideas", ...args, "--json"], timeout);
-    if (result.timedOut) throw new Error("专题任务超时；已有版本和提取缓存已保留，可以重试。");
+    if (result.timedOut) throw new Error("专题任务超时；已保存快照和结果保留。刷新专题后从原任务继续同步。");
     if (result.cancelled) throw new Error("专题任务已取消；已有版本保留。");
     if (result.code !== 0 || !result.json) throw new Error(tailLines(result.stderr || result.stdout, 3) || "专题命令未返回有效数据，请检查引擎版本。");
     return result.json as T;
@@ -322,6 +398,7 @@ export default class LitradarPlugin extends Plugin {
         this.zoteroLegacyCount = result.legacyCount || 0;
         this.zoteroLibrary = result.items;
         this.zoteroError = "";
+        this.zoteroSyncedAt = new Date().toISOString();
       } catch (error) {
         this.zoteroError = error instanceof Error ? error.message : String(error);
       } finally { this.zoteroLoadedAt = Date.now(); }
@@ -344,7 +421,7 @@ export default class LitradarPlugin extends Plugin {
   async zoteroArticleAction(article: Article, action: "save" | "download" | "open" | "pdf", collectionDate?: string): Promise<void> {
     const operation = this.zoteroMutations.catch(() => {}).then(async () => {
       const key = article.doi || article.id;
-      this.articleStates.set(key, {phase: action === "download" ? "正在由 Zotero 下载 PDF…" : "正在操作 Zotero…"});
+      this.articleStates.set(key, {...this.articleStates.get(key), phase: action === "download" ? "正在由 Zotero 下载 PDF…" : "正在操作 Zotero…", busy:true, error:undefined});
       this.refreshViews(false);
       try {
         await this.performZoteroArticleAction(article, action, collectionDate);
@@ -362,7 +439,10 @@ export default class LitradarPlugin extends Plugin {
       } catch (error) {
         this.articleStates.set(key, {phase: "操作失败", error: String(error)});
         throw error;
-      } finally { this.refreshViews(false); }
+      } finally {
+        const state=this.articleStates.get(key);if(state)state.busy=false;
+        this.refreshViews(false);
+      }
     });
     this.zoteroMutations = operation;
     return operation;
@@ -376,7 +456,7 @@ export default class LitradarPlugin extends Plugin {
     if (action === "open" || action === "pdf") {
       if (!result.key) throw new Error("文献尚未入库，请先保存到 Zotero");
       if (action === "pdf" && !result.pdfs?.length) throw new Error("Zotero 中还没有 PDF 附件，请先下载 PDF");
-      const url = action === "pdf" ? result.pdfs[0].url : result.selectUrl;
+      const url = action === "pdf" ? (result.pdfs.find(pdf=>pdf.available) || result.pdfs[0]).url : result.selectUrl;
       if (!/^zotero:\/\/(select|open-pdf)\/library\/items\/[A-Z0-9]{8}$/.test(url)) throw new Error("Zotero 链接无效");
       await require("electron").shell.openExternal(url);
     } else {
@@ -386,17 +466,19 @@ export default class LitradarPlugin extends Plugin {
     }
   }
 
-  articleStates = new Map<string, {phase: string; entry?: ZoteroReadingEntry; error?: string}>();
+  articleStates = new Map<string, {phase: string; entry?: ZoteroReadingEntry; error?: string; busy?: boolean; checking?: boolean}>();
 
   async inspectZoteroArticle(article: Article): Promise<void> {
     const key = article.doi || article.id;
-    this.articleStates.set(key, {phase: "正在检查 Zotero…"});
+    if(this.articleStates.get(key)?.checking)return;
+    const busy=this.articleStates.get(key)?.busy;
+    this.articleStates.set(key, {...this.articleStates.get(key), phase: "正在检查 Zotero…", checking:true, error:undefined});
     this.refreshViews(false);
     try {
       const entry = await this.zoteroCommand(["--action", "lookup", "--article-json", JSON.stringify(article)]) as ZoteroReadingEntry;
-      this.articleStates.set(key, {phase: entry.key ? (entry.pdfs?.length ? "已入库 · 有 PDF 附件" : "已入库 · 尚无 PDF") : "尚未入库", entry});
+      this.articleStates.set(key, {phase: fulltextState(entry).label, entry, busy});
     } catch (error) {
-      this.articleStates.set(key, {phase: "检查失败", error: String(error)});
+      this.articleStates.set(key, {phase: "检查失败", error: friendlyError(error), busy});
     }
     this.refreshViews(false);
   }
@@ -664,12 +746,12 @@ export default class LitradarPlugin extends Plugin {
     }
   }
 
-  /** Build a profile from the checked collections (LLM, falls back to keywords). */
+  /** Build a local keyword profile; model inference belongs to llm-for-zotero. */
   async engineProfile(collections: string[], name: string): Promise<{ ok: boolean; error: string }> {
     if (!this.bridge) return { ok: false, error: "引擎桥未初始化" };
     const args = ["zotero", "profile"];
     if (collections.length > 0) args.push("--collections", collections.join(","));
-    args.push("--llm", "--write");
+    args.push("--write");
     if (name.trim()) args.push("--name", name.trim());
     try {
       const result = await this.bridge.probeJson(args, 180000);
@@ -900,8 +982,8 @@ export default class LitradarPlugin extends Plugin {
 
     let args: string[];
     if (action === "run") {
-      // Full pipeline: fetch + LLM render. The engine owns the date window.
-      args = ["run", "--llm"];
+      // Reading and model inference belong to llm-for-zotero; keep radar deterministic.
+      args = ["run", "--no-llm"];
     } else if (action === "repair") {
       if (!runId) { new Notice("没有可重试的批次"); return; }
       args = ["repair", "--run-id", runId, "--no-llm"];
@@ -920,7 +1002,7 @@ export default class LitradarPlugin extends Plugin {
         return;
       }
       args = [action];
-      if (action === "render") args.push("--llm");
+      if (action === "render") args.push("--no-llm");
       if (store.window?.start && store.window.end && store.window.start === store.window.end) {
         // Single-day window: the engine-provided end date is exactly the store
         // date. This is the documented `render --date <date>` path.

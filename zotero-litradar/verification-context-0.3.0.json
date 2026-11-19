@@ -1,0 +1,29 @@
+{
+  "provider": "llm-for-zotero",
+  "request_id": "1f5850978378408ea013b60024d9bf29",
+  "libraryID": 1,
+  "keys": [
+    "49267STB",
+    "YIPUQ3E2"
+  ],
+  "items": [
+    {
+      "key": "49267STB",
+      "itemID": 11190,
+      "title": "A world model simulates the latent dynamics of human health",
+      "status": "attached",
+      "reason": "已加入会话上下文，尚未发送消息或读取全文",
+      "paper_id": "9547d1091770043abc29c3b646f252dd"
+    },
+    {
+      "key": "YIPUQ3E2",
+      "itemID": 11596,
+      "title": "Longitudinal alignments and syntheses of multimodal clinical data for personalized medicine with the PULSE framework",
+      "status": "attached",
+      "reason": "已加入会话上下文，尚未发送消息或读取全文",
+      "paper_id": "187b271288c9cd55f28e29746e4db120"
+    }
+  ],
+  "status": "attached",
+  "conversation_id": "2500000007"
+}

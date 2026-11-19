@@ -126,15 +126,32 @@ class Ideas:
             raise ConfigError("每次请选择 1–100 篇文献")
         with self.lock():
             idea = self.get(idea_id)
+            added = {}
             for paper in papers:
                 path = self._path("papers", paper["id"] + ".json")
                 old = read_json(path, default={})
                 # Importing a shorter record must not erase a richer abstract or Zotero identity.
                 merged = {**paper, **old, **{key: value for key, value in paper.items() if value not in (None, "", [])}}
                 atomic_write_json(path, merged)
-                idea["members"].setdefault(paper["id"], {"role": "待判断", "note": "", "added_at": iso()})
+                if paper["id"] not in idea["members"]:
+                    idea["members"][paper["id"]] = {"role": "待判断", "note": "", "added_at": iso()}
+                    added[paper["id"]] = dict(idea["members"][paper["id"]])
             self._save(idea)
-        return self.detail(idea_id)
+        return {**self.detail(idea_id), "added": added}
+
+    def undo_add(self, idea_id, added):
+        if not isinstance(added, dict) or len(added) > 100 or any(not isinstance(v, dict) for v in added.values()):
+            raise ConfigError("加入专题的回执无效")
+        removed = 0
+        with self.lock():
+            idea = self.get(idea_id)
+            for key, expected in added.items():
+                # Preserve memberships that were edited or removed/re-added since the operation.
+                if idea["members"].get(key) == expected:
+                    del idea["members"][key]
+                    removed += 1
+            self._save(idea)
+        return {"removed": removed, "preserved": len(added) - removed}
 
     def member(self, idea_id, paper_id, role=None, note=None, remove=False):
         with self.lock():

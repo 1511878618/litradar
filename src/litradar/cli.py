@@ -931,6 +931,11 @@ def cmd_zotero(args: argparse.Namespace) -> int:
         if _arg(args, "api"):
             ctx.config.raw.setdefault("zotero", {})["api"] = str(_arg(args, "api"))
         command = _arg(args, "zotero_command", "collections")
+        if command == "diagnose":
+            from .zotero_health import diagnose
+            from .zotero_workflow import LocalAPI
+            _print_json(diagnose(LocalAPI(ctx.config)))
+            return EXIT_OK
         if command == "reading":
             from .model import Article
             from .zotero_workflow import (
@@ -1121,6 +1126,7 @@ def cmd_zotero(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- parser
 def cmd_ideas(args: argparse.Namespace) -> int:
+    from .idea_collaboration import Collaboration
     from .ideas import Ideas, analyze, zotero_candidates
 
     ctx = make_context(args)
@@ -1139,10 +1145,14 @@ def cmd_ideas(args: argparse.Namespace) -> int:
             result = repo.create(args.name, args.question)
         elif action == "get":
             result = repo.detail(args.idea_id)
+            result["tasks"] = Collaboration(ctx.paths).list(args.idea_id)
         elif action == "update":
             result = repo.update(args.idea_id, payload("patch_json", {}))
         elif action == "add":
-            result = repo.add(args.idea_id, [payload("article_json")])
+            articles = payload("article_json")
+            result = repo.add(args.idea_id, articles if isinstance(articles, list) else [articles])
+        elif action == "undo-add":
+            result = repo.undo_add(args.idea_id, payload("membership_json"))
         elif action == "member":
             result = repo.member(args.idea_id, args.paper_id, args.role, args.note, args.remove)
         elif action in ("candidates", "import"):
@@ -1157,6 +1167,24 @@ def cmd_ideas(args: argparse.Namespace) -> int:
                 if {p["id"] for p in selected} != set(ids):
                     raise ConfigError("收藏夹内容已变化，请刷新列表后重选")
                 result = repo.add(args.idea_id, selected)
+        elif action in ("discuss", "check"):
+            from .zotero_context import check_papers, discuss
+            if action == "check":
+                result = check_papers(ctx.config, ctx.paths, args.idea_id, payload("paper_ids_json"))
+            else:
+                progress = (lambda phase, completed, total: print(json.dumps({"event": "context_progress", "phase": phase, "completed": completed, "total": total}, ensure_ascii=False), flush=True)) if _arg(args, "jsonl") else None
+                result = discuss(ctx.config, ctx.paths, args.idea_id, payload("paper_ids_json"), progress=progress)
+                if progress:
+                    print(json.dumps({"event": "context_result", "receipt": result}, ensure_ascii=False), flush=True)
+                    return EXIT_OK
+        elif action == "handoff":
+            result = Collaboration.summary(Collaboration(ctx.paths).create(args.idea_id, payload("paper_ids_json")))
+        elif action == "sync":
+            result = Collaboration.summary(Collaboration(ctx.paths).sync(ctx.config, args.idea_id, args.task_id))
+        elif action == "task":
+            result = Collaboration.summary(Collaboration(ctx.paths).get(args.idea_id, args.task_id), with_prompt=True)
+        elif action == "receive":
+            result = Collaboration(ctx.paths).receive(args.idea_id, args.task_id, args.result_file)
         elif action == "analyze":
             ids = payload("paper_ids_json")
             if ids is not None and (not isinstance(ids, list) or any(not isinstance(key, str) for key in ids)):
@@ -1182,10 +1210,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    ideas = subparsers.add_parser("ideas", help="专题文献库与带引用的摘要级归纳")
+    ideas = subparsers.add_parser("ideas", help="专题文献库与 llm-for-zotero 分析协作")
     add_common(ideas)
     idea_commands = ideas.add_subparsers(dest="idea_action", required=True)
-    for action in ("list", "create", "get", "update", "add", "member", "candidates", "import", "analyze", "analysis"):
+    for action in ("list", "create", "get", "update", "add", "undo-add", "member", "candidates", "import", "check", "discuss", "handoff", "sync", "task", "receive", "analyze", "analysis"):
         command = idea_commands.add_parser(action)
         add_common(command)
         command.set_defaults(handler=cmd_ideas)
@@ -1198,6 +1226,8 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--patch-json", required=True)
         if action == "add":
             command.add_argument("--article-json", required=True)
+        if action == "undo-add":
+            command.add_argument("--membership-json", required=True)
         if action == "member":
             command.add_argument("--paper-id", required=True)
             command.add_argument("--role")
@@ -1205,8 +1235,12 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--remove", action="store_true")
         if action in ("candidates", "import"):
             command.add_argument("--collection", required=True)
-        if action in ("analyze", "import"):
-            command.add_argument("--paper-ids-json", required=action == "import")
+        if action in ("analyze", "import", "handoff", "discuss", "check"):
+            command.add_argument("--paper-ids-json", required=action != "analyze")
+        if action in ("sync", "task", "receive"):
+            command.add_argument("--task-id", required=True)
+        if action == "receive":
+            command.add_argument("--result-file", help="手动关联当前 vault 内的 Markdown 笔记（相对路径）")
         if action == "analysis":
             command.add_argument("--analysis-id", required=True)
 
@@ -1368,6 +1402,9 @@ def build_parser() -> argparse.ArgumentParser:
     zotero = subparsers.add_parser("zotero", parents=[], help="collections / push")
     add_common(zotero)
     zotero_sub = zotero.add_subparsers(dest="zotero_command")
+    zotero_diagnose = zotero_sub.add_parser("diagnose", help="只读检查 Zotero 及插件连接")
+    add_common(zotero_diagnose)
+    zotero_diagnose.set_defaults(handler=cmd_zotero)
     zotero_collections = zotero_sub.add_parser("collections", parents=[], help="列出收藏夹")
     add_common(zotero_collections)
     zotero_collections.add_argument("--api", help="Zotero 本地 API（默认取配置）")

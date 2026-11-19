@@ -42,7 +42,8 @@ def main():
     prefs={'extensions.zotero.useDataDir':True,'extensions.zotero.dataDir':str(data),'extensions.zotero.firstRun.skip':True,'extensions.zotero.httpServer.enabled':True,'extensions.zotero.httpServer.port':port,'extensions.zotero.httpServer.localAPI.enabled':True,'extensions.autoDisableScopes':0,'extensions.enabledScopes':15,'extensions.update.enabled':False}
     (profile/'user.js').write_text(''.join(f'user_pref({json.dumps(k)}, {json.dumps(v)});\n' for k,v in prefs.items()))
     helper={'manifest_version':2,'name':'Isolated Reading List test','version':'0.0.1','applications':{'zotero':{'id':'litradar-test@litradar.local','update_url':'https://litradar.invalid/updates.json','strict_min_version':'10.0','strict_max_version':'10.0.*'}}}
-    xpi=REPO/'zotero-litradar/litradar-pdf-bridge-0.2.0.xpi'
+    version=json.loads((REPO/'zotero-litradar/manifest.json').read_text())['version']
+    xpi=REPO/f'zotero-litradar/litradar-pdf-bridge-{version}.xpi'
     code=(Path(__file__).with_name('native-reading-probe.js')).read_text().replace('TEST_ROOT',json.dumps(str(root))).replace('TEST_DATA_DIR',json.dumps(str(data))).replace('TEST_XPIS',json.dumps([str(Path(args.reading_list).resolve()),str(xpi)]))
     with zipfile.ZipFile(profile/'extensions/litradar-test@litradar.local.xpi','w') as z:
         z.writestr('manifest.json',json.dumps(helper));z.writestr('bootstrap.js',code)
